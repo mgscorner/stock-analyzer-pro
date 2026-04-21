@@ -121,6 +121,7 @@ def fetch_snapshot(
     if "fundamentals" in requested_layers:
         try:
             fundamentals = download_fundamentals(symbol, logger, limiter)
+            fundamental_fields = extract_fundamental_fields(fundamentals["financials"])
             fundamentals_name = fundamentals.get("name")
             snapshot.update(
                 {
@@ -133,8 +134,12 @@ def fetch_snapshot(
                     "inst_ownership": fundamentals["inst_ownership"],
                 }
             )
-            snapshot.update(extract_fundamental_fields(fundamentals["financials"]))
-            snapshot["fundamentals_status"] = "complete"
+            snapshot.update(fundamental_fields)
+            snapshot["fundamentals_status"] = (
+                "complete"
+                if has_real_fundamentals(snapshot)
+                else "missing"
+            )
             snapshot["fundamentals_updated_at"] = iso_now()
         except Exception as exc:
             snapshot["fundamentals_status"] = "error"
@@ -817,17 +822,32 @@ def extract_year_values(series: pd.Series, limit: int = 5) -> list[tuple[int, fl
     if series is None or len(series) == 0:
         return []
     latest_allowed_year = datetime.now(timezone.utc).year - 1
-    values: list[tuple[int, float]] = []
+    values_by_year: dict[int, tuple[pd.Timestamp, float]] = {}
     for idx, raw_value in series.items():
         year = getattr(idx, "year", None)
+        timestamp = None
         if year is None:
             try:
-                year = pd.to_datetime(idx).year
+                timestamp = pd.to_datetime(idx)
+                year = timestamp.year
             except Exception:
                 year = None
+        else:
+            try:
+                timestamp = pd.to_datetime(idx)
+            except Exception:
+                timestamp = pd.Timestamp(year=year, month=12, day=31)
         value = number_or_zero(raw_value)
-        if year and year <= latest_allowed_year and value:
-            values.append((int(year), value))
+        if not year or year > latest_allowed_year or not value:
+            continue
+        if timestamp is None:
+            timestamp = pd.Timestamp(year=int(year), month=12, day=31)
+
+        existing = values_by_year.get(int(year))
+        if existing is None or timestamp > existing[0]:
+            values_by_year[int(year)] = (timestamp, value)
+
+    values = [(year, payload[1]) for year, payload in values_by_year.items()]
     values.sort(key=lambda item: item[0], reverse=True)
     return values[:limit]
 
@@ -860,6 +880,20 @@ def extract_fundamental_fields(financials: pd.DataFrame) -> dict[str, Any]:
         fields[f"profit_year_{idx + 1}_label"] = profit_values[idx][0] if idx < len(profit_values) else None
         fields[f"profit_year_{idx + 1}_value"] = profit_values[idx][1] if idx < len(profit_values) else None
     return fields
+
+
+def has_real_fundamentals(snapshot: dict[str, Any]) -> bool:
+    try:
+        ownership = float(snapshot.get("inst_ownership") or 0)
+    except Exception:
+        ownership = 0
+    return (
+        ownership > 0
+        or snapshot.get("revenue_status") == "Growth"
+        or snapshot.get("profit_status") == "Growth"
+        or any(number_or_zero(snapshot.get(f"revenue_year_{idx}_value")) > 0 for idx in range(1, 6))
+        or any(number_or_zero(snapshot.get(f"profit_year_{idx}_value")) > 0 for idx in range(1, 6))
+    )
 
 
 def recalc_performance(snapshot: dict[str, Any]) -> dict[str, Any]:
