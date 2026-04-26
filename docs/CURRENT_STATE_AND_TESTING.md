@@ -416,6 +416,8 @@ FMP stable income works for some symbols and blocks others
 Finnhub reported financials fills some gaps
 foreign ADRs may have reported-currency complications
 institutional ownership is not cleanly solved yet
+ownership should display as Ownership pending when no confirmed positive value is cached
+the UI must not show 0.00% for missing/unconfirmed ownership
 ```
 
 ### Reported Currency Not Implemented Yet

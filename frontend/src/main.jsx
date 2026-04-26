@@ -985,6 +985,9 @@ function cellClass(key, value) {
     return 'updating';
   }
   if (key === 'ownership') {
+    if (['N/A', 'Updating...', 'Missing', 'Ownership pending'].includes(value)) {
+      return value === 'Updating...' ? 'updating' : '';
+    }
     const num = Number(String(value).replace('%', ''));
     if (num > 75) return 'strong';
     if (num > 50) return 'watch';

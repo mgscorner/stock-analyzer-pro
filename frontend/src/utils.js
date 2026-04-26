@@ -70,7 +70,7 @@ export function displayRow(symbol, comment, snapshot = {}) {
     price: money(snapshot.price, 2),
     revenueStatus: hasFundamentals ? snapshot.revenue_status || 'N/A' : fundamentalsDisplay,
     profitStatus: hasFundamentals ? snapshot.profit_status || 'N/A' : fundamentalsDisplay,
-    ownership: hasFundamentals ? percent(snapshot.inst_ownership) : fundamentalsDisplay,
+    ownership: ownershipDisplay(snapshot.inst_ownership),
     greenCharts: snapshot.green_charts || 'No',
     perf5y: hasHistory ? percent(performanceValue(snapshot, 'perf_5y', 'close_5y', 1260)) : 'N/A',
     perf3y: hasHistory ? percent(performanceValue(snapshot, 'perf_3y', 'close_3y', 756)) : 'N/A',
@@ -101,6 +101,12 @@ function hasRealFundamentals(snapshot) {
     || snapshot.profit_status === 'Growth'
     || Boolean(snapshot.revenue_year_1_value)
     || Boolean(snapshot.profit_year_1_value);
+}
+
+function ownershipDisplay(value) {
+  const num = Number(value || 0);
+  if (num > 0) return percent(num);
+  return 'Ownership pending';
 }
 
 function compactMoney(value) {

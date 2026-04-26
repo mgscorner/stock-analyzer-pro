@@ -98,7 +98,10 @@ If a provider cannot return those values, the app should show:
 Updating...
 Missing
 Missing Fundamentals
+Ownership pending
 ```
+
+`Ownership pending` means the app does not have a confirmed institutional ownership value yet. It should not be interpreted as `0%`.
 
 Price and historical performance should still work when fundamentals are missing.
 
