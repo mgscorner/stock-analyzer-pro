@@ -264,7 +264,44 @@ This uses the normal worker fetch path:
 quote
 history
 fundamentals
-safe stock_snapshots merge
+    safe stock_snapshots merge
+```
+
+### Full Cache Bootstrap
+
+Use this for production preload batches when the goal is a complete `stock_snapshots` row.
+
+The script processes symbols one by one. For each symbol it fetches quote, history, and fundamentals in parallel, then writes one safely merged snapshot. After writing, it recalculates cached SEC ownership percent if an ownership row already exists.
+
+Dry-run a few symbols:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_full_cache.py --symbols A ABBV ABT --dry-run --debug-logs
+```
+
+Run a limited universe batch:
+
+```powershell
+python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
+python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
+```
+
+Production-safe default behavior:
+
+```text
+one symbol at a time
+quote/history/fundamentals run in parallel for that symbol
+shared provider limiter prevents same-layer bursts
+existing good DB values are protected by the normal safe merge
+ownership percent is recalculated only from already cached SEC shares
+```
+
+Useful controls:
+
+```powershell
+python bootstrap_full_cache.py --universe sp500 --limit 25 --quote-spacing-ms 300 --history-spacing-ms 750 --fundamentals-spacing-ms 750
+python bootstrap_full_cache.py --symbols AAPL --skip-ownership-recalc
 ```
 
 ### SEC 13F Ownership Probe
