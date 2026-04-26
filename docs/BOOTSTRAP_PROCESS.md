@@ -361,6 +361,7 @@ Production rule:
 only update stock_snapshots.inst_ownership when the SEC aggregate produces a positive estimate
 do not replace missing/failed ownership with 0.00%
 store missing ownership attempts in ownership_snapshots for audit/retry planning
+keep rows with SEC shares but missing price/market cap in shares_only status so they can be recalculated later
 ```
 
 UI rule:

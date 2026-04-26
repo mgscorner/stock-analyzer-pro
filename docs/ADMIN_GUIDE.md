@@ -337,6 +337,14 @@ cache report period and calculated_at so users understand the 13F lag
 run this as an admin/background job, not during normal list loading
 ```
 
+Status meanings:
+
+```text
+complete: SEC institutional shares were found and ownership percent was calculated
+shares_only: SEC institutional shares were found, but price/market cap is missing so the percent cannot be calculated yet
+missing: no matching SEC holdings were found for the resolved CUSIP
+```
+
 Inspect latest ownership cache:
 
 ```sql
@@ -354,6 +362,25 @@ select
 from public.ownership_snapshots
 order by calculated_at desc, symbol
 limit 100;
+```
+
+Find rows that need price/market-cap cache before ownership percent can be calculated:
+
+```sql
+select
+    o.symbol,
+    o.report_period,
+    o.institutional_shares,
+    o.status,
+    s.price,
+    s.market_cap,
+    s.quote_status,
+    s.snapshot_status
+from public.ownership_snapshots o
+left join public.stock_snapshots s
+    on s.symbol = o.symbol
+where o.status = 'shares_only'
+order by o.symbol;
 ```
 
 ### Index Universe Bootstrap

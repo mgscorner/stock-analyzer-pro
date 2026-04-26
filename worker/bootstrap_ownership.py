@@ -6,7 +6,7 @@ import io
 import re
 import time
 import zipfile
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -87,7 +87,8 @@ def main() -> int:
         print(
             f"{symbol}: holders={row['holder_count']} "
             f"shares={row['institutional_shares']} "
-            f"ownership={row['estimated_ownership_percent']}"
+            f"ownership={row['estimated_ownership_percent']} "
+            f"status={row['status']}"
         )
         if args.spacing_ms > 0:
             time.sleep(args.spacing_ms / 1000)
@@ -197,7 +198,15 @@ def ownership_row(
     shares_outstanding = shares_outstanding_from_cache(client, symbol)
     institutional_shares = number_or_zero(aggregate["institutional_shares"])
     estimated = (institutional_shares / shares_outstanding) * 100 if institutional_shares > 0 and shares_outstanding > 0 else None
-    status = "complete" if institutional_shares > 0 else "missing"
+    if estimated and estimated > 0:
+        status = "complete"
+        error = None
+    elif institutional_shares > 0:
+        status = "shares_only"
+        error = "SEC institutional shares found, but cached price/market cap is missing for ownership percent"
+    else:
+        status = "missing"
+        error = "No matching 13F holdings found for CUSIP"
     return {
         "symbol": symbol,
         "cusip": cusip,
@@ -212,7 +221,7 @@ def ownership_row(
         "top_issuer_names": [issuer for issuer, _count in aggregate["issuers"].most_common(5)],
         "calculated_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
-        "error": None if status == "complete" else "No matching 13F holdings found for CUSIP",
+        "error": error,
     }
 
 
@@ -249,7 +258,7 @@ def shares_outstanding_from_cache(client, symbol: str) -> float:
 def filter_missing_ownership(client, symbols: list[str], report_period: str) -> list[str]:
     result = (
         client.table("ownership_snapshots")
-        .select("symbol,status")
+        .select("symbol,status,estimated_ownership_percent")
         .eq("report_period", report_period)
         .in_("symbol", symbols)
         .execute()
@@ -257,7 +266,7 @@ def filter_missing_ownership(client, symbols: list[str], report_period: str) -> 
     complete = {
         normalize_symbol(row.get("symbol"))
         for row in (result.data or [])
-        if row.get("status") == "complete"
+        if row.get("status") == "complete" and number_or_zero(row.get("estimated_ownership_percent")) > 0
     }
     return [symbol for symbol in symbols if symbol not in complete]
 
