@@ -32,9 +32,25 @@ def main() -> int:
     if args.universe:
         symbols.extend(load_universe_symbols(client, args.universe))
     symbols = dedupe_symbols(symbols)
+
+    if args.recalculate_only:
+        report_period = args.report_period or latest_cached_report_period(client)
+        if not report_period:
+            print("No ownership report period found. Run SEC ownership bootstrap first.")
+            return 2
+        return recalculate_cached_ownership(
+            client=client,
+            symbols=symbols,
+            report_period=report_period,
+            missing_only=args.missing_only,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            spacing_ms=args.spacing_ms,
+        )
+
     dataset_url = args.dataset_url or latest_13f_dataset_url()
     dataset_path = download_to_cache(dataset_url, args.force_download)
-    report_period = report_period_from_dataset(dataset_path)
+    report_period = args.report_period or report_period_from_dataset(dataset_path)
 
     if args.missing_only:
         symbols = filter_missing_ownership(client, symbols, report_period)
@@ -114,6 +130,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--missing-only", action="store_true", help="Skip symbols already cached for this report period.")
     parser.add_argument("--dry-run", action="store_true", help="Aggregate and print without writing to Supabase.")
     parser.add_argument("--dataset-url", help="Explicit SEC 13F data-set ZIP URL.")
+    parser.add_argument("--report-period", help="Explicit report period, for example 01dec2025-28feb2026.")
+    parser.add_argument(
+        "--recalculate-only",
+        action="store_true",
+        help="Recalculate ownership percent from cached ownership rows and current price/market cap without reparsing SEC data.",
+    )
     parser.add_argument("--force-download", action="store_true", help="Re-download SEC ZIP even if cached.")
     parser.add_argument("--spacing-ms", type=int, default=50, help="Pause between per-symbol output/write prep. Default 50.")
     parser.add_argument(
@@ -198,15 +220,7 @@ def ownership_row(
     shares_outstanding = shares_outstanding_from_cache(client, symbol)
     institutional_shares = number_or_zero(aggregate["institutional_shares"])
     estimated = (institutional_shares / shares_outstanding) * 100 if institutional_shares > 0 and shares_outstanding > 0 else None
-    if estimated and estimated > 0:
-        status = "complete"
-        error = None
-    elif institutional_shares > 0:
-        status = "shares_only"
-        error = "SEC institutional shares found, but cached price/market cap is missing for ownership percent"
-    else:
-        status = "missing"
-        error = "No matching 13F holdings found for CUSIP"
+    status, error = ownership_status(institutional_shares, estimated)
     return {
         "symbol": symbol,
         "cusip": cusip,
@@ -246,6 +260,144 @@ def upsert_snapshot_ownership(client, rows: list[dict[str, Any]]) -> None:
         client.table("stock_snapshots").update(
             {"inst_ownership": row["inst_ownership"], "updated_at": row["updated_at"]}
         ).eq("symbol", row["symbol"]).execute()
+
+
+def recalculate_cached_ownership(
+    client,
+    symbols: list[str],
+    report_period: str,
+    missing_only: bool,
+    limit: int,
+    dry_run: bool,
+    spacing_ms: int,
+) -> int:
+    rows = load_cached_ownership_rows(client, symbols, report_period, missing_only, limit)
+    if not rows:
+        print(f"No cached ownership rows to recalculate for report_period={report_period}.")
+        return 0
+
+    print(f"Ownership recalculation: {len(rows)} cached rows")
+    print(f"report_period: {report_period}")
+    print(f"missing_only: {missing_only}")
+    print(f"dry_run: {dry_run}")
+    print(f"spacing_ms: {spacing_ms}")
+    print("")
+
+    updates = []
+    snapshot_updates = []
+    started = time.time()
+    for row in rows:
+        symbol = normalize_symbol(row.get("symbol"))
+        institutional_shares = number_or_zero(row.get("institutional_shares"))
+        shares_outstanding = shares_outstanding_from_cache(client, symbol)
+        estimated = (
+            (institutional_shares / shares_outstanding) * 100
+            if institutional_shares > 0 and shares_outstanding > 0
+            else None
+        )
+        status, error = ownership_status(institutional_shares, estimated)
+        update = {
+            "symbol": symbol,
+            "report_period": report_period,
+            "estimated_ownership_percent": estimated,
+            "shares_outstanding_estimate": shares_outstanding or None,
+            "calculated_at": datetime.now(timezone.utc).isoformat(),
+            "status": status,
+            "error": error,
+        }
+        updates.append(update)
+        if number_or_zero(estimated) > 0:
+            snapshot_updates.append(
+                {
+                    "symbol": symbol,
+                    "inst_ownership": estimated,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        print(
+            f"{symbol}: shares={institutional_shares} "
+            f"shares_outstanding={shares_outstanding or None} "
+            f"ownership={estimated} "
+            f"status={status}"
+        )
+        if spacing_ms > 0:
+            time.sleep(spacing_ms / 1000)
+
+    if not dry_run:
+        update_cached_ownership_rows(client, updates)
+        upsert_snapshot_ownership(client, snapshot_updates)
+        print(f"database: updated {len(updates)} ownership rows")
+        print(f"database: updated {len(snapshot_updates)} stock_snapshots inst_ownership values")
+
+    duration = time.time() - started
+    print("")
+    print(f"done: {len(rows)} recalculated rows, {duration:.1f}s")
+    return 0
+
+
+def ownership_status(institutional_shares: float, estimated: float | None) -> tuple[str, str | None]:
+    if estimated and estimated > 0:
+        return "complete", None
+    if institutional_shares > 0:
+        return (
+            "shares_only",
+            "SEC institutional shares found, but cached price/market cap is missing for ownership percent",
+        )
+    return "missing", "No matching 13F holdings found for CUSIP"
+
+
+def latest_cached_report_period(client) -> str:
+    result = (
+        client.table("ownership_snapshots")
+        .select("report_period,calculated_at")
+        .order("calculated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    data = result.data or []
+    return str(data[0].get("report_period") or "") if data else ""
+
+
+def load_cached_ownership_rows(
+    client,
+    symbols: list[str],
+    report_period: str,
+    missing_only: bool,
+    limit: int,
+) -> list[dict[str, Any]]:
+    query = (
+        client.table("ownership_snapshots")
+        .select("symbol,report_period,institutional_shares,estimated_ownership_percent,status")
+        .eq("report_period", report_period)
+        .order("symbol")
+    )
+    if symbols:
+        query = query.in_("symbol", symbols)
+    result = query.execute()
+    rows = result.data or []
+    if missing_only:
+        rows = [
+            row
+            for row in rows
+            if row.get("status") != "complete"
+            or number_or_zero(row.get("estimated_ownership_percent")) <= 0
+        ]
+    if limit:
+        rows = rows[:limit]
+    return rows
+
+
+def update_cached_ownership_rows(client, rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        client.table("ownership_snapshots").update(
+            {
+                "estimated_ownership_percent": row["estimated_ownership_percent"],
+                "shares_outstanding_estimate": row["shares_outstanding_estimate"],
+                "calculated_at": row["calculated_at"],
+                "status": row["status"],
+                "error": row["error"],
+            }
+        ).eq("symbol", row["symbol"]).eq("report_period", row["report_period"]).execute()
 
 
 def shares_outstanding_from_cache(client, symbol: str) -> float:

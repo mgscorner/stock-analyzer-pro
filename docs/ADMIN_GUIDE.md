@@ -322,6 +322,19 @@ python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --
 python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
+After price and market-cap cache is available, recalculate percentages from existing SEC ownership rows without reparsing the SEC ZIP:
+
+```powershell
+python bootstrap_ownership.py --recalculate-only --missing-only --limit 25 --dry-run
+python bootstrap_ownership.py --recalculate-only --missing-only --limit 25
+```
+
+Recalculate a specific report period:
+
+```powershell
+python bootstrap_ownership.py --recalculate-only --report-period 01dec2025-28feb2026 --missing-only --limit 25
+```
+
 If automatic CUSIP matching fails or needs correction:
 
 ```powershell

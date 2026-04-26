@@ -355,6 +355,13 @@ Write a limited batch:
 python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
+Recalculate ownership percentages from cached SEC shares after price/market-cap data is available:
+
+```powershell
+python bootstrap_ownership.py --recalculate-only --missing-only --limit 25 --dry-run
+python bootstrap_ownership.py --recalculate-only --missing-only --limit 25
+```
+
 Production rule:
 
 ```text
