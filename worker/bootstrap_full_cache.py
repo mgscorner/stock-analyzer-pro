@@ -48,7 +48,7 @@ def main() -> int:
     if args.limit:
         print(f"limit: {args.limit}")
     if args.missing_only:
-        print("missing_only: snapshot_status")
+        print("missing_only: core_cache_fields")
     print(f"dry_run: {args.dry_run}")
     print(f"layer_workers: {args.layer_workers}")
     print(f"quote_spacing_ms: {args.quote_spacing_ms if not args.no_limiter else 0}")
@@ -227,16 +227,50 @@ def filter_incomplete_symbols(client, symbols: list[str]) -> list[str]:
         return []
     result = (
         client.table("stock_snapshots")
-        .select("symbol,snapshot_status")
+        .select(
+            "symbol,quote_status,history_status,fundamentals_status,price,market_cap,"
+            "price_updated_at,history_updated_at,fundamentals_updated_at"
+        )
         .in_("symbol", symbols)
         .execute()
     )
-    complete = {
-        normalize_symbol(row.get("symbol"))
+    rows_by_symbol = {
+        normalize_symbol(row.get("symbol")): row
         for row in (result.data or [])
-        if row.get("snapshot_status") == "complete"
+        if normalize_symbol(row.get("symbol"))
     }
-    return [symbol for symbol in symbols if symbol not in complete]
+
+    ranked: list[tuple[int, str]] = []
+    for symbol in symbols:
+        row = rows_by_symbol.get(symbol)
+        if row is None:
+            ranked.append((5, symbol))
+            continue
+        missing_score = core_missing_score(row)
+        if missing_score > 0:
+            ranked.append((missing_score, symbol))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [symbol for _score, symbol in ranked]
+
+
+def core_missing_score(row: dict[str, Any]) -> int:
+    score = 0
+    if row.get("quote_status") != "complete" or not positive_number(row.get("price")):
+        score += 1
+    if not positive_number(row.get("market_cap")):
+        score += 1
+    if row.get("history_status") != "complete" or not row.get("history_updated_at"):
+        score += 1
+    if row.get("fundamentals_status") != "complete" or not row.get("fundamentals_updated_at"):
+        score += 1
+    return score
+
+
+def positive_number(value: Any) -> bool:
+    try:
+        return float(value or 0) > 0
+    except Exception:
+        return False
 
 
 def load_symbols(cli_symbols: Iterable[str], file_path: Path | None) -> list[str]:
