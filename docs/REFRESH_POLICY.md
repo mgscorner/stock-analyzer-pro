@@ -567,6 +567,7 @@ Suggested priority values:
 ```text
 100 add_symbol_initial_quote_history
 90  add_symbol_initial_fundamentals
+85  add_symbol_cached_ownership
 80  visible_list_quote
 70  visible_missing_history_or_fundamentals
 60  recently_visible_quote
@@ -574,6 +575,7 @@ Suggested priority values:
 40  weekly_user_background_history_or_fundamentals
 30  other_watchlist_background_work
 20  index_universe_prefill
+15  sec_13f_ownership_prefill
 10  unused_master_ticker_maintenance
 ```
 
@@ -623,6 +625,33 @@ profit_status
 inst_ownership
 fundamental year fields
 history baselines unless a history job is running
+```
+
+## Bootstrap And Ownership
+
+The full admin bootstrap process is documented in:
+
+```text
+docs/BOOTSTRAP_PROCESS.md
+```
+
+Ownership policy:
+
+```text
+Institutional ownership must be cached before the user needs it.
+Do not scan SEC 13F filings when a user opens a list or adds a ticker.
+Do not overwrite a positive cached ownership value with zero/null provider output.
+Do not show 0.00% unless the value is confirmed true.
+Show Ownership pending or Missing if SEC 13F ownership is not cached yet.
+```
+
+SEC 13F ownership jobs should run:
+
+```text
+after quarterly 13F filing windows
+during low-traffic server time
+as an admin bootstrap phase before launch
+with lower priority than visible user refresh work
 ```
 
 ## Debug Market Request Logging

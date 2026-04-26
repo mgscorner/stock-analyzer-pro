@@ -1001,6 +1001,71 @@ public.stock_snapshot_usage(symbol, watchlist_count, visible_count, last_visible
 
 Implementation can start with `stock_universes`, which already exists in the schema, and add usage rollups later.
 
+Detailed bootstrap process:
+
+```text
+docs/BOOTSTRAP_PROCESS.md
+```
+
+### FR-037A SEC 13F Institutional Ownership Pipeline
+
+Institutional ownership is important enough to treat as its own data pipeline.
+
+Reason:
+
+```text
+users expect ownership instantly
+13F aggregation is too heavy for add-ticker or list-load time
+the standard 13F lag is normal market-data behavior
+commercial providers mostly repackage the same delayed SEC filings
+```
+
+Required behavior:
+
+```text
+precompute institutional ownership in background
+cache results in Supabase
+show cached value instantly in the table
+label value as SEC 13F with report period
+never show 0.00% unless confirmed true
+show Ownership pending or Missing when not cached
+```
+
+Data to store:
+
+```text
+symbol
+report_period
+source = sec_13f
+institutional_shares
+estimated_ownership_percent
+holder_count
+top_holders
+source_filed_at
+calculated_at
+status
+error
+```
+
+Expected future features:
+
+```text
+top institutional holders
+holder count
+quarter-over-quarter ownership trend
+new institutional holders
+exited institutional holders
+biggest buyers and sellers
+```
+
+Implementation note:
+
+```text
+13F filings are CUSIP-first, not ticker-first.
+Do not rely on fuzzy company-name matching for production.
+Prototype with AAPL/MSFT/NVDA first and compare against Yahoo-style values.
+```
+
 ### FR-038 Background Cache Maintenance Decision Table
 
 Create an explicit scheduler decision table for always-on cache maintenance.

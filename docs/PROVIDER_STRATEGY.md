@@ -42,7 +42,7 @@ requires ticker-to-CIK mapping
 some companies use different XBRL revenue tags
 coverage is strongest for SEC filers
 not a live price source
-not an institutional ownership percentage source
+companyfacts is not an institutional ownership percentage source
 ```
 
 Decision:
@@ -51,6 +51,46 @@ Decision:
 Use SEC companyfacts first for annual revenue/profit.
 Use only annual filing facts and avoid quarterly data in yearly columns.
 Keep Finnhub/FMP/yfinance as fallbacks, not as the default for annual revenue/profit.
+```
+
+### SEC 13F
+
+Planned source for:
+
+```text
+institutional ownership percentage
+top institutional holders
+holder count
+quarter-over-quarter ownership changes
+```
+
+Why:
+
+```text
+official source for institutional manager holdings
+free
+same delayed source commercial APIs depend on
+better fit for background precomputation than per-click APIs
+```
+
+Risk:
+
+```text
+13F data is delayed by design
+filings are quarterly and can arrive up to 45 days after quarter end
+aggregation requires scanning many manager filings
+filings identify securities primarily by CUSIP
+estimated ownership percent also needs shares outstanding
+```
+
+Decision:
+
+```text
+Do not calculate 13F ownership during user interactions.
+Build a background SEC 13F ownership pipeline.
+Cache ownership in Supabase before users need it.
+Show report period and source in the UI.
+Show Missing/Ownership pending instead of fake zero when not cached.
 ```
 
 ### Finnhub

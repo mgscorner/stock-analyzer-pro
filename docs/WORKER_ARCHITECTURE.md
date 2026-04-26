@@ -28,6 +28,7 @@ Refresh behavior is governed by:
 ```text
 production_app/docs/REFRESH_POLICY.md
 production_app/docs/PROVIDER_STRATEGY.md
+production_app/docs/BOOTSTRAP_PROCESS.md
 ```
 
 Provider routing is category-aware. The worker should eventually choose providers per data group, not through one global provider switch:
@@ -41,6 +42,21 @@ screener/universe
 ```
 
 Each group can have a different default provider and fallback chain.
+
+Admin bootstrap is a separate background path:
+
+```text
+admin bootstrap
+    -> builds stock universe
+    -> fills annual fundamentals from SEC EDGAR
+    -> fills history/profile data
+    -> later runs SEC 13F ownership aggregation
+    -> writes shared cache tables
+
+normal user flow
+    -> reads cached rows instantly
+    -> queues only due/missing high-priority refresh work
+```
 
 ## Secret Handling
 
