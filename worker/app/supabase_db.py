@@ -43,8 +43,8 @@ def create_refresh_job(
     symbols: list[str],
     watchlist_name: str | None,
 ) -> dict[str, Any]:
-    result = (
-        client.table("refresh_jobs")
+    result = execute_with_retry(
+        lambda: client.table("refresh_jobs")
         .insert(
             {
                 "user_id": user_id,
@@ -66,13 +66,13 @@ def get_job(client: Client, job_id: str, user_id: str | None = None) -> dict[str
     query = client.table("refresh_jobs").select("*").eq("id", job_id)
     if user_id:
         query = query.eq("user_id", user_id)
-    result = query.maybe_single().execute()
+    result = execute_with_retry(lambda: query.maybe_single().execute())
     return result.data
 
 
 def get_snapshot(client: Client, symbol: str) -> dict[str, Any] | None:
-    result = (
-        client.table("stock_snapshots")
+    result = execute_with_retry(
+        lambda: client.table("stock_snapshots")
         .select("*")
         .eq("symbol", symbol)
         .maybe_single()

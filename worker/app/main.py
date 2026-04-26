@@ -139,7 +139,10 @@ def refresh(
 
 @app.get("/jobs/{job_id}")
 def job_status(job_id: str, user: Annotated[dict, Depends(current_user)]) -> dict:
-    job = get_job(service_client, job_id, user_id=user["id"])
+    try:
+        job = get_job(service_client, job_id, user_id=user["id"])
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not read refresh job status. Retry shortly.") from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
     return {"ok": True, "job": job}
