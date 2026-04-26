@@ -961,7 +961,11 @@ Candidate universes:
 S&P 500
 Nasdaq 100
 Dow Jones Industrial Average
+Russell 1000 later
 Russell 2000 later, depending on provider budgets
+S&P MidCap 400 later
+S&P SmallCap 600 later
+sector/theme lists later
 ```
 
 Purpose:
@@ -998,6 +1002,8 @@ Current note:
 13F/EDGAR cannot provide index membership lists.
 13F is for institutional holdings, not S&P/Nasdaq/Dow constituent membership.
 The current index bootstrap script uses public constituent tables and reports diffs.
+Phase 1 is S&P 500, Nasdaq 100, and Dow 30.
+SOFI-style non-index tickers are still allowed through on-demand add and then become part of the shared cache.
 ```
 
 Suggested tables:

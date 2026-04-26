@@ -26,9 +26,26 @@ Dow Jones Industrial Average
 Later symbol universes:
 
 ```text
+Russell 1000
 Russell 2000
-user-requested sector lists
+S&P MidCap 400
+S&P SmallCap 600
+S&P 500 sector ETFs / sector lists
+Nasdaq Biotechnology Index
+Philadelphia Semiconductor Index / SOX
+user-requested sector/theme lists
 admin-uploaded CSV universe
+```
+
+Bootstrap order:
+
+```text
+phase 1: S&P 500, Nasdaq 100, Dow Jones Industrial Average
+phase 2: Russell 1000
+phase 3: Russell 2000
+phase 4: S&P MidCap 400 and S&P SmallCap 600
+phase 5: sector/theme lists
+phase 6: broader US common-stock universe if provider budget and filtering are ready
 ```
 
 ## Required Properties
