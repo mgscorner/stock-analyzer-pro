@@ -152,6 +152,34 @@ mark fundamentals complete when valid annual values exist
 fallback to Finnhub/FMP only when SEC cannot cover the symbol
 ```
 
+Current admin script:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_sec_fundamentals.py --symbols AAPL MSFT NVDA --dry-run --debug-logs
+```
+
+Write results to Supabase:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_sec_fundamentals.py --symbols AAPL MSFT NVDA
+```
+
+Use a file:
+
+```powershell
+python bootstrap_sec_fundamentals.py --file symbols.csv --dry-run
+python bootstrap_sec_fundamentals.py --file symbols.csv
+```
+
+File formats:
+
+```text
+plain text: one symbol per line
+csv: first column, or a column named symbol
+```
+
 Retry policy:
 
 ```text

@@ -182,6 +182,30 @@ Turn it off for normal production:
 WORKER_DEBUG_MARKET_REQUESTS=0
 ```
 
+### SEC Fundamentals Bootstrap
+
+Dry-run a few symbols:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_sec_fundamentals.py --symbols AAPL MSFT NVDA --dry-run --debug-logs
+```
+
+Write annual SEC revenue/profit to `stock_snapshots`:
+
+```powershell
+python bootstrap_sec_fundamentals.py --symbols AAPL MSFT NVDA
+```
+
+Run from a file:
+
+```powershell
+python bootstrap_sec_fundamentals.py --file symbols.csv --dry-run
+python bootstrap_sec_fundamentals.py --file symbols.csv
+```
+
+This script uses the same safe merge path as normal refresh jobs. It should not overwrite existing good values with null/zero provider output.
+
 ### Limiter Settings
 
 Recommended production defaults:
