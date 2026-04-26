@@ -330,10 +330,37 @@ estimates ownership percent when cached price and market cap can estimate shares
 Production gap:
 
 ```text
-store ownership_snapshots
 join/report manager names for top holders
 schedule quarterly refresh after SEC 13F data sets publish
 handle ambiguous ticker-to-CUSIP matches with a maintained mapping table
+```
+
+Current cache bootstrap script:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_ownership.py --symbols AAPL MSFT NVDA --dry-run
+python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
+```
+
+Before writing ownership rows, run:
+
+```text
+production_app/docs/ownership_snapshots_schema.sql
+```
+
+Write a limited batch:
+
+```powershell
+python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
+```
+
+Production rule:
+
+```text
+only update stock_snapshots.inst_ownership when the SEC aggregate produces a positive estimate
+do not replace missing/failed ownership with 0.00%
+store missing ownership attempts in ownership_snapshots for audit/retry planning
 ```
 
 UI rule:

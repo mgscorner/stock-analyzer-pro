@@ -298,7 +298,63 @@ reported_value
 estimated_ownership_percent when price and market cap are cached
 ```
 
-This is still a prototype. Production ownership needs a database table and a background pipeline.
+The standalone probe is diagnostic. Use the ownership bootstrap below for cache preparation.
+
+### SEC 13F Ownership Bootstrap
+
+Before writing ownership cache rows, run this SQL file in Supabase:
+
+```text
+production_app/docs/ownership_snapshots_schema.sql
+```
+
+Dry-run ownership for a few symbols:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_ownership.py --symbols AAPL MSFT NVDA --dry-run
+```
+
+Run from bootstrapped index universes:
+
+```powershell
+python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
+python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
+```
+
+If automatic CUSIP matching fails or needs correction:
+
+```powershell
+python bootstrap_ownership.py --symbols BRK.B --cusip BRK.B=084670702 --dry-run
+```
+
+Production safety rules:
+
+```text
+do not show missing ownership as 0.00%
+do not overwrite a positive cached ownership value with null or zero
+cache report period and calculated_at so users understand the 13F lag
+run this as an admin/background job, not during normal list loading
+```
+
+Inspect latest ownership cache:
+
+```sql
+select
+    symbol,
+    report_period,
+    holder_count,
+    filing_count,
+    institutional_shares,
+    estimated_ownership_percent,
+    shares_outstanding_estimate,
+    status,
+    error,
+    calculated_at
+from public.ownership_snapshots
+order by calculated_at desc, symbol
+limit 100;
+```
 
 ### Index Universe Bootstrap
 
