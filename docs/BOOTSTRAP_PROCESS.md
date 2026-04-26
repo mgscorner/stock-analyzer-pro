@@ -201,8 +201,8 @@ python bootstrap_sec_fundamentals.py --file symbols.csv
 Use bootstrapped universe membership:
 
 ```powershell
-python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run
-python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
 File formats:
@@ -241,8 +241,8 @@ Current admin script:
 
 ```powershell
 cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
-python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run --debug-logs
-python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run --debug-logs
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
 Efficiency rule:

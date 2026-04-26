@@ -207,8 +207,8 @@ python bootstrap_sec_fundamentals.py --file symbols.csv
 Run from bootstrapped index universes:
 
 ```powershell
-python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run --debug-logs
-python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run --debug-logs
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
 Remove `--limit` when running the full phase-1 annual fundamentals preload.
@@ -227,8 +227,8 @@ python bootstrap_history.py --symbols AAPL MSFT NVDA --dry-run --debug-logs
 Run from bootstrapped index universes:
 
 ```powershell
-python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run --debug-logs
-python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run --debug-logs
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
 History bootstrap uses one 6-year history call per symbol and calculates these locally:

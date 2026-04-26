@@ -22,6 +22,8 @@ def main() -> int:
     if args.universe:
         symbols.extend(load_universe_symbols(client, args.universe))
     symbols = dedupe_symbols(symbols)
+    if args.missing_only:
+        symbols = filter_missing_symbols(client, symbols, "fundamentals_status")
     if args.limit:
         symbols = symbols[: args.limit]
     if not symbols:
@@ -40,6 +42,8 @@ def main() -> int:
         print(f"universe: {', '.join(args.universe)}")
     if args.limit:
         print(f"limit: {args.limit}")
+    if args.missing_only:
+        print("missing_only: fundamentals_status")
     print(f"dry_run: {args.dry_run}")
     print(f"spacing_ms: {args.spacing_ms if not args.no_limiter else 0}")
     print("")
@@ -121,6 +125,11 @@ def parse_args() -> argparse.Namespace:
         help="Limit symbols after de-duplication for controlled batches.",
     )
     parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="Skip symbols where fundamentals_status is already complete.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Fetch and print results without writing to Supabase.",
@@ -163,6 +172,23 @@ def load_universe_symbols(client, universes: Iterable[str]) -> list[str]:
         .execute()
     )
     return [normalize_symbol(row.get("symbol")) for row in (result.data or []) if normalize_symbol(row.get("symbol"))]
+
+
+def filter_missing_symbols(client, symbols: list[str], status_field: str) -> list[str]:
+    if not symbols:
+        return []
+    result = (
+        client.table("stock_snapshots")
+        .select(f"symbol,{status_field}")
+        .in_("symbol", symbols)
+        .execute()
+    )
+    complete = {
+        normalize_symbol(row.get("symbol"))
+        for row in (result.data or [])
+        if row.get(status_field) == "complete"
+    }
+    return [symbol for symbol in symbols if symbol not in complete]
 
 
 def dedupe_symbols(symbols: Iterable[str]) -> list[str]:
