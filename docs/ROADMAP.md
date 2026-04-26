@@ -531,6 +531,13 @@ Each button must state what it will call and respect provider cooldowns.
 
 Add a proper password reset feature to the login screen.
 
+Status:
+
+```text
+Implemented for Supabase Auth email reset.
+Production deployment still requires Supabase Auth redirect URLs to include the frontend domain.
+```
+
 Behavior:
 
 ```text

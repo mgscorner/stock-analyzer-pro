@@ -8,6 +8,12 @@ After signing in, the app loads the last active watchlist when available.
 
 The table should appear from cached data first. Prices may update shortly after the table appears.
 
+## Reset Password
+
+Use `Forgot Password` on the login screen to request a reset email.
+
+After opening the reset link, enter and confirm the new password.
+
 ## Watchlists
 
 Users can:
@@ -119,7 +125,6 @@ row background colors
 row font colors
 row bold toggle
 analysis change notifications
-reset password
 layer-specific refresh buttons
 daily morning screen
 ```

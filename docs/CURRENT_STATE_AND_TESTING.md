@@ -27,6 +27,25 @@ App start must not trigger fundamentals refresh.
 App start must not refresh hidden watchlists.
 ```
 
+### Password Reset
+
+Implemented behavior:
+
+```text
+login screen has a Forgot Password action
+user enters email
+Supabase sends password reset email
+reset link returns to the frontend
+app shows Set New Password form
+user updates password through Supabase Auth
+```
+
+Admin requirement:
+
+```text
+Supabase Auth redirect URLs must include the active frontend URL.
+```
+
 ### Visible Price Refresh
 
 Expected behavior:
@@ -345,9 +364,9 @@ FR-006
 FR-007
 ```
 
-### Reset Password Not Implemented Yet
+### Reset Password
 
-Password reset is documented as a feature request but not implemented.
+Password reset is implemented for the Supabase Auth email reset flow.
 
 See:
 

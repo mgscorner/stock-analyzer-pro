@@ -397,6 +397,11 @@ td.mid.sticky-col {
   width: 100%;
 }
 
+.auth-link {
+  width: 100%;
+  margin-top: 8px;
+}
+
 code {
   display: block;
   margin: 6px 0;

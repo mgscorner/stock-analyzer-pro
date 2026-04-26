@@ -47,6 +47,7 @@ const PRICE_TTL_MS = 15 * 60 * 1000;
 function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
     if (!supabaseConfigured) {
@@ -59,8 +60,11 @@ function App() {
       setLoading(false);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true);
+      }
     });
 
     return () => listener.subscription.unsubscribe();
@@ -76,6 +80,10 @@ function App() {
 
   if (!session) {
     return <AuthScreen />;
+  }
+
+  if (passwordRecovery) {
+    return <PasswordResetScreen onComplete={() => setPasswordRecovery(false)} />;
   }
 
   return <Dashboard session={session} />;
@@ -101,6 +109,14 @@ function AuthScreen() {
   async function submit(event) {
     event.preventDefault();
     setMessage('');
+
+    if (mode === 'reset') {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      });
+      setMessage(error ? error.message : 'Password reset email sent.');
+      return;
+    }
 
     const action =
       mode === 'sign-in'
@@ -134,11 +150,70 @@ function AuthScreen() {
         </label>
         <label>
           Password
-          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
+          <input
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            type="password"
+            required={mode !== 'reset'}
+            disabled={mode === 'reset'}
+          />
         </label>
         <button className="primary" type="submit">
-          {mode === 'sign-in' ? 'Sign In' : 'Create Account'}
+          {mode === 'reset' ? 'Send Reset Email' : mode === 'sign-in' ? 'Sign In' : 'Create Account'}
         </button>
+        <button
+          className="ghost auth-link"
+          type="button"
+          onClick={() => {
+            setMessage('');
+            setMode(mode === 'reset' ? 'sign-in' : 'reset');
+          }}
+        >
+          {mode === 'reset' ? 'Back to Sign In' : 'Forgot Password'}
+        </button>
+        {message && <p className="notice">{message}</p>}
+      </form>
+    </main>
+  );
+}
+
+function PasswordResetScreen({ onComplete }) {
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [message, setMessage] = useState('');
+
+  async function submit(event) {
+    event.preventDefault();
+    setMessage('');
+    if (password.length < 8) {
+      setMessage('Use at least 8 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setMessage('Passwords do not match.');
+      return;
+    }
+    const { error } = await supabase.auth.updateUser({ password });
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+    onComplete();
+  }
+
+  return (
+    <main className="auth-shell">
+      <form className="auth-card" onSubmit={submit}>
+        <h1>Set New Password</h1>
+        <label>
+          New Password
+          <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
+        </label>
+        <label>
+          Confirm Password
+          <input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" required />
+        </label>
+        <button className="primary" type="submit">Update Password</button>
         {message && <p className="notice">{message}</p>}
       </form>
     </main>

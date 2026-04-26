@@ -40,6 +40,35 @@ never put provider API keys in frontend/.env
 never put any secret behind a VITE_ prefix
 ```
 
+### Supabase Auth Redirects
+
+Password reset emails return the user to the frontend URL. Configure Supabase Auth URL settings so the reset link can return to both local development and production.
+
+Local development:
+
+```text
+http://localhost:5173
+```
+
+Production:
+
+```text
+https://your-production-frontend-domain
+```
+
+Supabase dashboard location:
+
+```text
+Authentication -> URL Configuration
+```
+
+Required behavior:
+
+```text
+Site URL points to the production frontend when deployed.
+Redirect URLs include localhost for development and the production frontend URL.
+```
+
 ### Worker `.env`
 
 File:
