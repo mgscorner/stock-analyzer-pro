@@ -30,10 +30,13 @@ FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 FMP_STABLE_BASE_URL = "https://financialmodelingprep.com/stable"
 YAHOO_SPARK_URL = "https://query1.finance.yahoo.com/v7/finance/spark"
+SEC_TICKER_CIK_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
 _quote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _history_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 _fundamentals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_sec_ticker_cik_cache: tuple[float, dict[str, str]] | None = None
 _quote_summary_blocked_until = 0.0
 _batch_quote_blocked_until = 0.0
 
@@ -57,6 +60,23 @@ def iso_now() -> str:
 
 def provider_key(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+def sec_headers() -> dict[str, str]:
+    user_agent = os.getenv("SEC_USER_AGENT", "").strip()
+    if not user_agent:
+        user_agent = "AnalyzerApp development contact@example.com"
+    return {
+        "User-Agent": user_agent,
+        "Accept-Encoding": "gzip, deflate",
+        "Host": "data.sec.gov",
+    }
+
+
+def sec_lookup_headers() -> dict[str, str]:
+    headers = sec_headers()
+    headers["Host"] = "www.sec.gov"
+    return headers
 
 
 def number_or_zero(value: Any) -> float:
@@ -299,6 +319,11 @@ def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: Mar
         return cached
 
     limiter.wait("fundamentals")
+    result = fetch_sec_fundamentals(symbol, logger, limiter)
+    if result:
+        cache_set(_fundamentals_cache, symbol, result)
+        return result
+
     result = fetch_finnhub_reported_fundamentals(symbol, logger, limiter)
     if result:
         ownership = fetch_finnhub_ownership_metric(symbol, logger, limiter)
@@ -516,6 +541,148 @@ def fetch_yahoo_spark_quotes(
         return quotes
     except Exception:
         return {}
+
+
+def fetch_sec_fundamentals(
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> dict[str, Any]:
+    symbol = normalize_symbol(symbol)
+    cik = lookup_sec_cik(symbol, logger, limiter)
+    if not cik:
+        return {}
+    try:
+        with logger.track(symbol, "fundamentals", "sec_companyfacts") as span:
+            response = requests.get(
+                SEC_COMPANY_FACTS_URL.format(cik=cik),
+                headers=sec_headers(),
+                timeout=20,
+            )
+            span.status_code = response.status_code
+            response.raise_for_status()
+        payload = response.json() or {}
+        financials = sec_companyfacts_to_frame(payload)
+        if financials.empty:
+            print(f"{symbol}: SEC companyfacts returned no annual revenue/profit")
+            return {}
+        return {
+            "name": payload.get("entityName") or symbol,
+            "market_cap": 0,
+            "inst_ownership": 0,
+            "financials": financials,
+        }
+    except Exception as exc:
+        print(f"{symbol}: SEC companyfacts failed: {exc}")
+        return {}
+
+
+def lookup_sec_cik(symbol: str, logger: MarketRequestLogger, limiter: MarketRequestLimiter) -> str:
+    global _sec_ticker_cik_cache
+
+    symbol = normalize_symbol(symbol)
+    now = time.time()
+    if _sec_ticker_cik_cache and now - _sec_ticker_cik_cache[0] < 86400:
+        return _sec_ticker_cik_cache[1].get(symbol, "")
+
+    try:
+        with logger.track(symbol, "fundamentals", "sec_company_tickers") as span:
+            response = requests.get(
+                SEC_TICKER_CIK_URL,
+                headers=sec_lookup_headers(),
+                timeout=20,
+            )
+            span.status_code = response.status_code
+            response.raise_for_status()
+        rows = (response.json() or {}).values()
+        ticker_map: dict[str, str] = {}
+        for row in rows:
+            ticker = normalize_symbol(row.get("ticker"))
+            cik = row.get("cik_str")
+            if ticker and cik:
+                ticker_map[ticker] = str(cik).zfill(10)
+        _sec_ticker_cik_cache = (now, ticker_map)
+        return ticker_map.get(symbol, "")
+    except Exception as exc:
+        print(f"{symbol}: SEC ticker CIK lookup failed: {exc}")
+        return ""
+
+
+def sec_companyfacts_to_frame(payload: dict[str, Any]) -> pd.DataFrame:
+    facts = ((payload.get("facts") or {}).get("us-gaap") or {})
+    values: dict[str, dict[pd.Timestamp, float]] = {
+        "Total Revenue": sec_concept_series(facts, SEC_REVENUE_CONCEPTS),
+        "Net Income": sec_concept_series(facts, SEC_NET_INCOME_CONCEPTS),
+        "Gross Profit": sec_concept_series(facts, SEC_GROSS_PROFIT_CONCEPTS),
+    }
+    return pd.DataFrame(values).T
+
+
+SEC_ANNUAL_FORMS = {"10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A"}
+SEC_REVENUE_CONCEPTS = [
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "Revenues",
+    "SalesRevenueNet",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+    "SalesRevenueGoodsNet",
+    "SalesRevenueServicesNet",
+]
+SEC_NET_INCOME_CONCEPTS = ["NetIncomeLoss", "ProfitLoss"]
+SEC_GROSS_PROFIT_CONCEPTS = ["GrossProfit"]
+
+
+def sec_concept_series(facts: dict[str, Any], concepts: list[str]) -> dict[pd.Timestamp, float]:
+    best: dict[pd.Timestamp, float] = {}
+    best_score: tuple[int, int] = (-1, -1)
+    for concept in concepts:
+        rows = (((facts.get(concept) or {}).get("units") or {}).get("USD") or [])
+        values = annual_sec_values(rows)
+        latest_year = max((timestamp.year for timestamp in values), default=0)
+        score = (latest_year, len(values))
+        if score > best_score:
+            best = values
+            best_score = score
+    return best
+
+
+def annual_sec_values(rows: list[dict[str, Any]]) -> dict[pd.Timestamp, float]:
+    values_by_year: dict[int, tuple[pd.Timestamp, float, str]] = {}
+    latest_allowed_year = datetime.now(timezone.utc).year - 1
+    for row in rows:
+        form = str(row.get("form") or "")
+        if form not in SEC_ANNUAL_FORMS:
+            continue
+        fy = safe_year(row.get("fy"))
+        fp = str(row.get("fp") or "").upper()
+        if fp and fp != "FY":
+            continue
+        end = parse_timestamp(row.get("end"))
+        filed = str(row.get("filed") or "")
+        value = number_or_zero(row.get("val"))
+        year = int(end.year) if end is not None else fy
+        if year is None or year > latest_allowed_year or value == 0:
+            continue
+        timestamp = end or pd.Timestamp(year=year, month=12, day=31)
+        existing = values_by_year.get(year)
+        if existing is None or filed > existing[2]:
+            values_by_year[year] = (timestamp, value, filed)
+    return {payload[0]: payload[1] for _year, payload in values_by_year.items()}
+
+
+def safe_year(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def parse_timestamp(value: Any) -> pd.Timestamp | None:
+    try:
+        if not value:
+            return None
+        return pd.to_datetime(value)
+    except Exception:
+        return None
 
 
 def fetch_fmp_fundamentals(

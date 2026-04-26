@@ -9,10 +9,48 @@ The app should not use one global provider switch. Provider routing must be cate
 Use these first:
 
 ```text
+SEC EDGAR
 Finnhub
 FMP
 Yahoo Chart
 Yahoo Spark
+```
+
+### SEC EDGAR
+
+Primary source for:
+
+```text
+annual revenue
+annual profit / net income
+annual fiscal-year history from companyfacts
+```
+
+Why:
+
+```text
+official public filing source
+free and does not require an API key
+reduces load on Yahoo/Finnhub/FMP for historical financial statements
+fits the app cache model because annual financials change rarely
+```
+
+Risk:
+
+```text
+requires ticker-to-CIK mapping
+some companies use different XBRL revenue tags
+coverage is strongest for SEC filers
+not a live price source
+not an institutional ownership percentage source
+```
+
+Decision:
+
+```text
+Use SEC companyfacts first for annual revenue/profit.
+Use only annual filing facts and avoid quarterly data in yearly columns.
+Keep Finnhub/FMP/yfinance as fallbacks, not as the default for annual revenue/profit.
 ```
 
 ### Finnhub
@@ -23,7 +61,7 @@ Primary candidate for:
 quote
 company profile
 market cap
-fundamentals where stock/financials-reported maps cleanly
+fundamentals fallback where stock/financials-reported maps cleanly
 news/sentiment later
 analyst data later
 possible ownership later
@@ -50,7 +88,7 @@ Decision:
 
 ```text
 Use Finnhub first for quote/profile when FINNHUB_API_KEY is present.
-Use Finnhub stock/financials-reported first for annual fundamentals while FMP free-plan coverage is inconsistent.
+Use Finnhub stock/financials-reported as annual fundamentals fallback when SEC does not cover a symbol.
 ```
 
 ### FMP

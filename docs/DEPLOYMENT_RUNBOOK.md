@@ -65,6 +65,7 @@ Never expose these in frontend files:
 SUPABASE_SERVICE_ROLE_KEY
 FINNHUB_API_KEY
 FMP_API_KEY
+SEC_USER_AGENT
 ```
 
 Before production, rotate keys that appeared in:

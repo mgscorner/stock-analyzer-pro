@@ -85,6 +85,7 @@ SUPABASE_ANON_KEY=your_supabase_anon_key_here
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
 FINNHUB_API_KEY=your_finnhub_api_key_here
 FMP_API_KEY=your_fmp_api_key_here
+SEC_USER_AGENT="Your Name your-email@example.com"
 WORKER_ALLOWED_ORIGINS=http://localhost:5173
 WORKER_DEBUG_MARKET_REQUESTS=0
 WORKER_ENABLE_REQUEST_LIMITER=1
@@ -101,6 +102,7 @@ WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | none | Server-only key used by the worker to write trusted data such as `stock_snapshots` and `refresh_jobs`. |
 | `FINNHUB_API_KEY` | optional | empty | Enables Finnhub quote/profile and reported-financials fallback calls. |
 | `FMP_API_KEY` | optional | empty | Enables FMP stable profile and stable income-statement calls. |
+| `SEC_USER_AGENT` | recommended | development placeholder | User-Agent sent to SEC EDGAR APIs. Set this to a real name/app and email before production. |
 | `WORKER_ALLOWED_ORIGINS` | yes | `http://localhost:5173` | Comma-separated CORS allowlist for browser origins allowed to call the worker. |
 | `WORKER_DEBUG_MARKET_REQUESTS` | optional | `0` | When `1`, writes provider/API request attempts to `public.market_request_logs`. |
 | `WORKER_ENABLE_REQUEST_LIMITER` | optional | `1` | Enables spacing between outbound provider calls. Keep enabled by default. |
@@ -153,9 +155,12 @@ visible price:
     Yahoo Chart fallback
 
 new ticker fundamentals:
-    Finnhub reported financials
+    SEC EDGAR companyfacts for annual revenue/profit
+    Finnhub reported financials fallback
     FMP stable income statement fallback
 ```
+
+SEC EDGAR does not require an API key and is preferred for annual revenue/profit when a symbol maps to a SEC CIK. It should not be treated as an ownership source.
 
 ### Debug Settings
 

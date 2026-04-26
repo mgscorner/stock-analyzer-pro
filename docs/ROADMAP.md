@@ -46,6 +46,14 @@ fundamentals from provider C
 institutional ownership from provider D
 ```
 
+Current annual fundamentals direction:
+
+```text
+SEC EDGAR companyfacts is preferred for annual revenue/profit where a ticker maps to a SEC CIK.
+Finnhub/FMP remain fallbacks.
+Ownership is a separate provider group and must not be inferred from SEC companyfacts.
+```
+
 Each group needs its own:
 
 ```text

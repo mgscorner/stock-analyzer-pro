@@ -61,9 +61,10 @@ Optional market-data provider keys:
 ```text
 FINNHUB_API_KEY=...
 FMP_API_KEY=...
+SEC_USER_AGENT=Your Name your-email@example.com
 ```
 
-When present, the worker prefers Finnhub for quote/profile data and FMP for fundamentals. When absent or when a provider fails, the worker falls back to the existing Yahoo paths described in `docs/PROVIDER_STRATEGY.md`.
+SEC EDGAR is the preferred source for annual revenue/profit and does not require an API key. Set `SEC_USER_AGENT` to a real contact before production. Finnhub/FMP remain useful for quote/profile and fallback data. See `docs/PROVIDER_STRATEGY.md`.
 
 Optional worker debug:
 
