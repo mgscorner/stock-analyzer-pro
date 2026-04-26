@@ -237,6 +237,22 @@ calculate 5Y, 3Y, 1Y, 6M, 3M, 1M baselines
 calculate performance values when current price is available
 ```
 
+Current admin script:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run --debug-logs
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25
+```
+
+Efficiency rule:
+
+```text
+one 6-year history call per symbol
+derive every percentage column locally
+do not fetch separate 5Y/3Y/1Y/6M/3M/1M values
+```
+
 Rate:
 
 ```text

@@ -215,6 +215,32 @@ Remove `--limit` when running the full phase-1 annual fundamentals preload.
 
 This script uses the same safe merge path as normal refresh jobs. It should not overwrite existing good values with null/zero provider output.
 
+### History Bootstrap
+
+Dry-run a few symbols:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_history.py --symbols AAPL MSFT NVDA --dry-run --debug-logs
+```
+
+Run from bootstrapped index universes:
+
+```powershell
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run --debug-logs
+python bootstrap_history.py --universe sp500 nasdaq100 dow30 --limit 25
+```
+
+History bootstrap uses one 6-year history call per symbol and calculates these locally:
+
+```text
+close_5y, close_3y, close_1y, close_6m, close_3m, close_1m
+perf_5y, perf_3y, perf_1y, perf_6m, perf_3m, perf_1m
+green_charts
+```
+
+It should not make separate provider calls for each percentage column.
+
 ### Index Universe Bootstrap
 
 Generate current index CSVs:
