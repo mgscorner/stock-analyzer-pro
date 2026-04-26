@@ -206,6 +206,49 @@ python bootstrap_sec_fundamentals.py --file symbols.csv
 
 This script uses the same safe merge path as normal refresh jobs. It should not overwrite existing good values with null/zero provider output.
 
+### Index Universe Bootstrap
+
+Generate current index CSVs:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python create_index_lists.py --output-dir index_exports
+```
+
+Compare fetched constituents with `stock_universes` without writing:
+
+```powershell
+python create_index_lists.py --output-dir index_exports --diff-db
+```
+
+Write fetched index memberships to `stock_universes`:
+
+```powershell
+python create_index_lists.py --output-dir index_exports --write-db
+```
+
+Current script sources:
+
+```text
+S&P 500 constituents from Wikipedia public table
+Nasdaq 100 constituents from Wikipedia public table
+Dow 30 constituents from Wikipedia public table
+```
+
+Current schema behavior:
+
+```text
+new index members are upserted into stock_universes
+removed members are reported in diff mode
+removed members cannot be marked inactive until stock_universes gets active/removed_at columns
+```
+
+Optional schema upgrade for inactive/removed-member tracking:
+
+```text
+docs/stock_universes_membership_update.sql
+```
+
 ### Limiter Settings
 
 Recommended production defaults:

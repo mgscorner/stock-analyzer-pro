@@ -3,5 +3,6 @@ uvicorn[standard]==0.34.0
 supabase==2.28.0
 yfinance==0.2.51
 pandas==2.2.3
+lxml==6.0.4
 python-dotenv==1.0.1
 requests==2.32.3

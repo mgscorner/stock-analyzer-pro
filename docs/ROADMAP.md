@@ -992,6 +992,14 @@ add new index members to the universe table
 do not delete stock_snapshots automatically when a symbol leaves an index
 ```
 
+Current note:
+
+```text
+13F/EDGAR cannot provide index membership lists.
+13F is for institutional holdings, not S&P/Nasdaq/Dow constituent membership.
+The current index bootstrap script uses public constituent tables and reports diffs.
+```
+
 Suggested tables:
 
 ```sql

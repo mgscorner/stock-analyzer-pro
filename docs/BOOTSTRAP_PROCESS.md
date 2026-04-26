@@ -112,6 +112,14 @@ index membership source
 manual admin CSV fallback
 ```
 
+Current admin script:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python create_index_lists.py --output-dir index_exports --diff-db
+python create_index_lists.py --output-dir index_exports --write-db
+```
+
 Actions:
 
 ```text

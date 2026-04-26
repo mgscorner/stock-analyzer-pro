@@ -33,3 +33,4 @@ Thumbs.db
 *.log
 tmp/
 temp/
+worker/index_exports/
