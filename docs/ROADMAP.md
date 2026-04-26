@@ -1035,6 +1035,57 @@ time of day / low-traffic window
 
 This is the production replacement for simple polling.
 
+### FR-039 Delete Account Request Flow
+
+Allow users to request account deletion from inside the app.
+
+Purpose:
+
+```text
+users need a clear way to leave the service
+account deletion must not accidentally damage shared market-data cache
+destructive deletion needs confirmation, auditability, and production-safe data handling
+```
+
+Required behavior:
+
+```text
+user opens account/settings area
+user requests account deletion
+app requires explicit confirmation
+request is stored with timestamp, user_id, email, and status
+admin can review pending deletion requests
+user data deletion is separated from shared stock_snapshots cache deletion
+```
+
+Data handling rules:
+
+```text
+delete or anonymize user-owned rows such as watchlists, comments, preferences, row styling, manual overrides, alerts, and account metadata
+do not delete stock_snapshots just because one user deletes their account
+do not delete shared provider cache rows while any other user/watchlist may still reference the symbol
+manual user-entered values must be user-scoped so they can be deleted with the account without damaging provider cache
+```
+
+Safety requirements:
+
+```text
+no one-click irreversible deletion
+cooldown or admin approval before production deletion
+clear final confirmation text
+audit log of request and completion
+support cancellation while request is pending
+```
+
+Future implementation tables:
+
+```text
+account_deletion_requests
+user_preferences
+user_cell_overrides
+user_row_styles
+```
+
 ## Future Screener Features
 
 Some providers offer a screener endpoint that can return many matching symbols in one call. Keep this as a later product feature, not part of the immediate refresh fix.
