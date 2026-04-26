@@ -163,7 +163,6 @@ def merge_snapshot(existing: dict[str, Any], fresh: dict[str, Any]) -> dict[str,
     # Fundamentals are a separate layer. Do not let a fast quote/history
     # refresh overwrite expensive cached fundamentals with placeholders.
     fundamentals_keys = [
-        "inst_ownership",
         "revenue_status",
         "profit_status",
         "revenue_year_1_label",
@@ -190,6 +189,7 @@ def merge_snapshot(existing: dict[str, Any], fresh: dict[str, Any]) -> dict[str,
         "fundamentals_status",
     ]
     if fresh.get("fundamentals_updated_at"):
+        copy_if_positive(merged, fresh, "inst_ownership")
         for key in fundamentals_keys:
             copy_if_present(merged, fresh, key)
 

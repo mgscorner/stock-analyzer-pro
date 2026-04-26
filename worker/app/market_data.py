@@ -70,6 +70,13 @@ def number_or_zero(value: Any) -> float:
         return 0.0
 
 
+def normalize_ownership_percent(value: Any) -> float:
+    ownership = number_or_zero(value)
+    if 0 < ownership <= 1:
+        return ownership * 100
+    return ownership
+
+
 def fetch_snapshot(
     symbol: str,
     layers: list[str] | None = None,
@@ -131,9 +138,10 @@ def fetch_snapshot(
                         else snapshot.get("name") or symbol
                     ),
                     "market_cap": fundamentals["market_cap"] or snapshot.get("market_cap") or 0,
-                    "inst_ownership": fundamentals["inst_ownership"],
                 }
             )
+            if number_or_zero(fundamentals.get("inst_ownership")) > 0:
+                snapshot["inst_ownership"] = fundamentals["inst_ownership"]
             snapshot.update(fundamental_fields)
             snapshot["fundamentals_status"] = (
                 "complete"
@@ -293,6 +301,13 @@ def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: Mar
     limiter.wait("fundamentals")
     result = fetch_finnhub_reported_fundamentals(symbol, logger, limiter)
     if result:
+        ownership = fetch_finnhub_ownership_metric(symbol, logger, limiter)
+        if ownership <= 0:
+            profile = fetch_fmp_profile_fields(symbol, logger, limiter)
+            ownership = profile.get("inst_ownership") or 0
+            result["name"] = profile.get("name") or result.get("name") or ""
+            result["market_cap"] = profile.get("market_cap") or result.get("market_cap") or 0
+        result["inst_ownership"] = ownership or result.get("inst_ownership") or 0
         cache_set(_fundamentals_cache, symbol, result)
         return result
 
@@ -319,7 +334,7 @@ def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: Mar
     result = {
         "name": info.get("longName") or info.get("shortName") or symbol,
         "market_cap": number_or_zero(info.get("marketCap")),
-        "inst_ownership": number_or_zero(info.get("heldPercentInstitutions")) * 100,
+        "inst_ownership": normalize_ownership_percent(info.get("heldPercentInstitutions")),
         "financials": financials,
     }
     cache_set(_fundamentals_cache, symbol, result)
@@ -513,20 +528,7 @@ def fetch_fmp_fundamentals(
         return {}
     symbol = normalize_symbol(symbol)
     try:
-        profile = {}
-        with logger.track(symbol, "fundamentals", "fmp_profile") as span:
-            profile_response = requests.get(
-                f"{FMP_STABLE_BASE_URL}/profile",
-                params={"symbol": symbol, "apikey": api_key},
-                timeout=12,
-            )
-            span.status_code = profile_response.status_code
-            profile_response.raise_for_status()
-        profile_rows = profile_response.json() or []
-        if isinstance(profile_rows, list) and profile_rows:
-            profile = profile_rows[0] or {}
-        elif isinstance(profile_rows, dict):
-            profile = profile_rows
+        profile = fetch_fmp_profile_fields(symbol, logger, limiter)
 
         with logger.track(symbol, "fundamentals", "fmp_income_statement") as span:
             income_response = requests.get(
@@ -545,15 +547,105 @@ def fetch_fmp_fundamentals(
             return {}
 
         return {
-            "name": profile.get("companyName") or profile.get("companyName") or symbol,
-            "market_cap": number_or_zero(profile.get("mktCap") or profile.get("marketCap")),
-            "inst_ownership": number_or_zero(
-                profile.get("institutionalOwnership") or profile.get("heldPercentInstitutions")
-            ),
+            "name": profile.get("name") or symbol,
+            "market_cap": profile.get("market_cap") or 0,
+            "inst_ownership": profile.get("inst_ownership") or fetch_finnhub_ownership_metric(symbol, logger, limiter),
             "financials": financials,
         }
     except Exception:
         return {}
+
+
+def fetch_fmp_profile_fields(
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> dict[str, Any]:
+    api_key = provider_key("FMP_API_KEY")
+    if not api_key:
+        print(f"{symbol}: FMP profile ownership skipped: missing FMP_API_KEY")
+        return {}
+    symbol = normalize_symbol(symbol)
+    try:
+        limiter.wait("fundamentals")
+        with logger.track(symbol, "ownership", "fmp_profile") as span:
+            profile_response = requests.get(
+                f"{FMP_STABLE_BASE_URL}/profile",
+                params={"symbol": symbol, "apikey": api_key},
+                timeout=12,
+            )
+            span.status_code = profile_response.status_code
+            profile_response.raise_for_status()
+        profile_rows = profile_response.json() or []
+        if isinstance(profile_rows, list) and profile_rows:
+            profile = profile_rows[0] or {}
+        elif isinstance(profile_rows, dict):
+            profile = profile_rows
+        else:
+            print(f"{symbol}: FMP profile ownership missing: empty response")
+            return {}
+
+        ownership = normalize_ownership_percent(
+            profile.get("institutionalOwnership")
+            or profile.get("heldPercentInstitutions")
+            or profile.get("institutionalOwnershipPercentage")
+        )
+        if ownership <= 0:
+            print(f"{symbol}: FMP profile ownership missing or zero")
+        return {
+            "name": profile.get("companyName") or profile.get("companyName") or "",
+            "market_cap": number_or_zero(profile.get("mktCap") or profile.get("marketCap")),
+            "inst_ownership": ownership,
+        }
+    except Exception as exc:
+        print(f"{symbol}: FMP profile ownership failed: {exc}")
+        return {}
+
+
+def fetch_finnhub_ownership_metric(
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> float:
+    api_key = provider_key("FINNHUB_API_KEY")
+    if not api_key:
+        print(f"{symbol}: Finnhub ownership skipped: missing FINNHUB_API_KEY")
+        return 0
+    symbol = normalize_symbol(symbol)
+    try:
+        limiter.wait("fundamentals")
+        with logger.track(symbol, "ownership", "finnhub_metric") as span:
+            response = requests.get(
+                f"{FINNHUB_BASE_URL}/stock/metric",
+                params={"symbol": symbol, "metric": "all", "token": api_key},
+                timeout=12,
+            )
+            span.status_code = response.status_code
+            response.raise_for_status()
+        metric = (response.json() or {}).get("metric") or {}
+        ownership = first_positive(
+            metric,
+            [
+                "institutionalOwnership",
+                "institutionalOwnershipPercent",
+                "heldPercentInstitutions",
+                "institutionPercent",
+            ],
+        )
+        if ownership <= 0:
+            print(f"{symbol}: Finnhub ownership missing or zero")
+        return ownership
+    except Exception as exc:
+        print(f"{symbol}: Finnhub ownership failed: {exc}")
+        return 0
+
+
+def first_positive(payload: dict[str, Any], keys: list[str]) -> float:
+    for key in keys:
+        value = normalize_ownership_percent(payload.get(key))
+        if value > 0:
+            return value
+    return 0
 
 
 def fmp_income_statement_to_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:

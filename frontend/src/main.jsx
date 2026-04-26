@@ -343,11 +343,12 @@ function Dashboard({ session }) {
 
     const cleanSymbols = [...new Set((symbols || []).map(normalizeSymbol).filter(Boolean))];
     if (!cleanSymbols.length) return null;
+    const accessToken = await currentAccessToken();
 
     const response = await fetch(`${workerApiUrl}/refresh`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -373,9 +374,10 @@ function Dashboard({ session }) {
 
   async function loadRefreshJob(jobId) {
     if (!workerApiUrl) return null;
+    const accessToken = await currentAccessToken();
     const response = await fetch(`${workerApiUrl}/jobs/${jobId}`, {
       headers: {
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${accessToken}`,
       },
     });
     const body = await response.json().catch(() => ({}));
@@ -384,6 +386,11 @@ function Dashboard({ session }) {
       return null;
     }
     return body.job;
+  }
+
+  async function currentAccessToken() {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || session.access_token;
   }
 
   async function waitForJob(jobId, timeoutMs = 60000) {
