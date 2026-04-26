@@ -15,13 +15,19 @@ from app.supabase_db import make_service_client, upsert_snapshot
 
 def main() -> int:
     args = parse_args()
+    settings = get_settings()
+    needs_db = bool(args.universe) or not args.dry_run
+    client = make_service_client(settings) if needs_db else None
     symbols = load_symbols(args.symbols, args.file)
+    if args.universe:
+        symbols.extend(load_universe_symbols(client, args.universe))
+    symbols = dedupe_symbols(symbols)
+    if args.limit:
+        symbols = symbols[: args.limit]
     if not symbols:
         print("No symbols provided.")
         return 2
 
-    settings = get_settings()
-    client = None if args.dry_run else make_service_client(settings)
     limiter = MarketRequestLimiter(
         enabled=not args.no_limiter,
         quote_min_interval_ms=settings.quote_min_interval_ms,
@@ -30,6 +36,10 @@ def main() -> int:
     )
 
     print(f"SEC fundamentals bootstrap: {len(symbols)} symbols")
+    if args.universe:
+        print(f"universe: {', '.join(args.universe)}")
+    if args.limit:
+        print(f"limit: {args.limit}")
     print(f"dry_run: {args.dry_run}")
     print(f"spacing_ms: {args.spacing_ms if not args.no_limiter else 0}")
     print("")
@@ -99,6 +109,18 @@ def parse_args() -> argparse.Namespace:
         help="Text or CSV file containing symbols. CSV uses the first column unless a symbol column exists.",
     )
     parser.add_argument(
+        "--universe",
+        nargs="*",
+        default=[],
+        help="Read symbols from stock_universes. Example: --universe sp500 nasdaq100 dow30",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Limit symbols after de-duplication for controlled batches.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Fetch and print results without writing to Supabase.",
@@ -126,9 +148,28 @@ def load_symbols(cli_symbols: Iterable[str], file_path: Path | None) -> list[str
     symbols = [normalize_symbol(symbol) for symbol in cli_symbols if normalize_symbol(symbol)]
     if file_path:
         symbols.extend(read_symbol_file(file_path))
+    return symbols
+
+
+def load_universe_symbols(client, universes: Iterable[str]) -> list[str]:
+    universe_names = [str(value).strip() for value in universes if str(value).strip()]
+    if not universe_names:
+        return []
+    result = (
+        client.table("stock_universes")
+        .select("symbol")
+        .in_("universe_name", universe_names)
+        .order("symbol")
+        .execute()
+    )
+    return [normalize_symbol(row.get("symbol")) for row in (result.data or []) if normalize_symbol(row.get("symbol"))]
+
+
+def dedupe_symbols(symbols: Iterable[str]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
     for symbol in symbols:
+        symbol = normalize_symbol(symbol)
         if symbol and symbol not in seen:
             seen.add(symbol)
             deduped.append(symbol)

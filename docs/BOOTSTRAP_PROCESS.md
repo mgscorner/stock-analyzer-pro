@@ -198,6 +198,13 @@ python bootstrap_sec_fundamentals.py --file symbols.csv --dry-run
 python bootstrap_sec_fundamentals.py --file symbols.csv
 ```
 
+Use bootstrapped universe membership:
+
+```powershell
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25
+```
+
 File formats:
 
 ```text

@@ -204,6 +204,15 @@ python bootstrap_sec_fundamentals.py --file symbols.csv --dry-run
 python bootstrap_sec_fundamentals.py --file symbols.csv
 ```
 
+Run from bootstrapped index universes:
+
+```powershell
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25 --dry-run --debug-logs
+python bootstrap_sec_fundamentals.py --universe sp500 nasdaq100 dow30 --limit 25
+```
+
+Remove `--limit` when running the full phase-1 annual fundamentals preload.
+
 This script uses the same safe merge path as normal refresh jobs. It should not overwrite existing good values with null/zero provider output.
 
 ### Index Universe Bootstrap
