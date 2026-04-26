@@ -1078,6 +1078,13 @@ Implementation note:
 13F filings are CUSIP-first, not ticker-first.
 Do not rely on fuzzy company-name matching for production.
 Prototype with AAPL/MSFT/NVDA first and compare against Yahoo-style values.
+Initial prototype uses SEC quarterly Form 13F data-set ZIPs and the SEC 13F securities list.
+```
+
+Prototype command:
+
+```powershell
+python check_sec_13f_ownership.py AAPL
 ```
 
 ### FR-038 Background Cache Maintenance Decision Table

@@ -241,6 +241,65 @@ green_charts
 
 It should not make separate provider calls for each percentage column.
 
+### One-Symbol Full Bootstrap
+
+Use this when a user enters a valid ticker that is not in the preloaded universe and the cache does not have it yet.
+
+Dry-run:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python bootstrap_symbol.py SOFI --dry-run --debug-logs
+```
+
+Write to Supabase:
+
+```powershell
+python bootstrap_symbol.py SOFI
+```
+
+This uses the normal worker fetch path:
+
+```text
+quote
+history
+fundamentals
+safe stock_snapshots merge
+```
+
+### SEC 13F Ownership Probe
+
+Prototype institutional ownership from SEC 13F data sets:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python check_sec_13f_ownership.py AAPL
+python check_sec_13f_ownership.py MSFT
+```
+
+If automatic CUSIP matching fails or is ambiguous:
+
+```powershell
+python check_sec_13f_ownership.py AAPL --cusip 037833100
+```
+
+The first run downloads the latest SEC quarterly 13F data-set ZIP into `worker/sec_cache`. Later runs reuse the cached ZIP.
+
+Current prototype output includes:
+
+```text
+symbol
+cusip
+dataset
+holder_count
+filing_count
+institutional_shares
+reported_value
+estimated_ownership_percent when price and market cap are cached
+```
+
+This is still a prototype. Production ownership needs a database table and a background pipeline.
+
 ### Index Universe Bootstrap
 
 Generate current index CSVs:

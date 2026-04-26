@@ -309,6 +309,33 @@ store holder count and top holders
 store report period and source filing dates
 ```
 
+Current prototype:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python check_sec_13f_ownership.py AAPL
+python check_sec_13f_ownership.py MSFT
+```
+
+Prototype behavior:
+
+```text
+resolves ticker to CUSIP using the SEC company ticker list and current SEC 13F securities list
+downloads the latest SEC quarterly 13F data-set ZIP
+filters the flattened information table by CUSIP
+aggregates institutional shares, reported value, holder rows, and filing count
+estimates ownership percent when cached price and market cap can estimate shares outstanding
+```
+
+Production gap:
+
+```text
+store ownership_snapshots
+join/report manager names for top holders
+schedule quarterly refresh after SEC 13F data sets publish
+handle ambiguous ticker-to-CUSIP matches with a maintained mapping table
+```
+
 UI rule:
 
 ```text
