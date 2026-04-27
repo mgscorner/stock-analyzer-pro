@@ -13,6 +13,7 @@ import './styles.css';
 
 const annualYears = targetAnnualYears(4);
 const ACTIVITY_HEARTBEAT_MS = 60 * 1000;
+const FEEDBACK_PROMPT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
 const columns = [
   ['ticker', 'Ticker'],
@@ -238,12 +239,18 @@ function Dashboard({ session }) {
   const [sortConfig, setSortConfig] = useState({ key: 'ticker', direction: 'asc' });
   const [hiddenColumns, setHiddenColumns] = useState(() => loadHiddenColumns(user.id));
   const [chartTicker, setChartTicker] = useState('');
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState('general');
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [showFeedbackPrompt, setShowFeedbackPrompt] = useState(false);
   const autoPriceRefreshRef = useRef('');
   const pendingInitialSymbolsRef = useRef(new Set());
 
   useEffect(() => {
     loadConfig();
     loadWatchlists();
+    setShowFeedbackPrompt(shouldShowFeedbackPrompt(user.id));
   }, []);
 
   useEffect(() => {
@@ -681,6 +688,40 @@ function Dashboard({ session }) {
     setPendingDeleteList(false);
   }
 
+  async function submitFeedback(event) {
+    event.preventDefault();
+    const messageText = feedbackMessage.trim();
+    if (!messageText) {
+      setMessage('Write a short message first.', 'error');
+      return;
+    }
+    setFeedbackSubmitting(true);
+    const payload = {
+      user_id: user.id,
+      feedback_type: feedbackType,
+      message: messageText,
+      context_watchlist: activeList || null,
+      context_symbol: chartTicker || null,
+    };
+    const { error } = await supabase.from('user_feedback').insert(payload);
+    setFeedbackSubmitting(false);
+    if (error) {
+      setMessage(error.message, 'error');
+      return;
+    }
+    dismissFeedbackPrompt(user.id);
+    setShowFeedbackPrompt(false);
+    setFeedbackOpen(false);
+    setFeedbackType('general');
+    setFeedbackMessage('');
+    setMessage('Feedback sent.');
+  }
+
+  function openFeedback(type = 'general') {
+    setFeedbackType(type);
+    setFeedbackOpen(true);
+  }
+
   const rows = useMemo(() => {
     const unsorted = Object.entries(watchlistData).map(([symbol, comment]) =>
       displayRow(symbol, comment, snapshots[symbol])
@@ -803,6 +844,13 @@ function Dashboard({ session }) {
         )}
 
         <section>
+          <h2>Feedback</h2>
+          <button className="ghost full-width" onClick={() => openFeedback('general')}>
+            Send Feedback
+          </button>
+        </section>
+
+        <section>
           <details className="column-panel">
             <summary>Columns</summary>
           <div className="column-list">
@@ -839,6 +887,22 @@ function Dashboard({ session }) {
 
         <div className={`status-line ${statusType}`}>{statusText}</div>
 
+        {showFeedbackPrompt && !feedbackOpen && (
+          <div className="soft-prompt">
+            <div>
+              <strong>Feedback</strong>
+              <p>What is missing or slowing you down?</p>
+            </div>
+            <div className="soft-prompt-actions">
+              <button className="ghost" onClick={() => openFeedback('feature')}>Tell Us</button>
+              <button className="ghost" onClick={() => {
+                dismissFeedbackPrompt(user.id);
+                setShowFeedbackPrompt(false);
+              }}>Dismiss</button>
+            </div>
+          </div>
+        )}
+
         {!activeList ? (
           <EmptyState text="Create a watchlist to get started." />
         ) : !rows.length ? (
@@ -855,6 +919,37 @@ function Dashboard({ session }) {
         )}
         {activeList && rows.length > 0 && (
           <ChartPanel symbol={chartTicker} snapshot={snapshots[chartTicker]} />
+        )}
+        {feedbackOpen && (
+          <div className="modal-backdrop" onClick={() => setFeedbackOpen(false)}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Feedback</h2>
+                <button className="ghost" onClick={() => setFeedbackOpen(false)}>Close</button>
+              </div>
+              <form onSubmit={submitFeedback}>
+                <label>
+                  Type
+                  <select value={feedbackType} onChange={(event) => setFeedbackType(event.target.value)}>
+                    <option value="general">General</option>
+                    <option value="feature">Feature Request</option>
+                    <option value="bug">Bug</option>
+                  </select>
+                </label>
+                <label>
+                  Message
+                  <textarea
+                    value={feedbackMessage}
+                    onChange={(event) => setFeedbackMessage(event.target.value)}
+                    placeholder="What is missing or slowing you down?"
+                  />
+                </label>
+                <button type="submit" disabled={feedbackSubmitting}>
+                  {feedbackSubmitting ? 'Sending...' : 'Send'}
+                </button>
+              </form>
+            </div>
+          </div>
         )}
       </main>
     </div>
@@ -880,6 +975,10 @@ function hiddenColumnsKey(userId) {
   return `stock-analyzer:hidden-columns:${userId}`;
 }
 
+function feedbackPromptKey(userId) {
+  return `stock-analyzer:feedback-prompt-dismissed:${userId}`;
+}
+
 function loadHiddenColumns(userId) {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(hiddenColumnsKey(userId)) || '[]');
@@ -887,6 +986,20 @@ function loadHiddenColumns(userId) {
   } catch {
     return [];
   }
+}
+
+function shouldShowFeedbackPrompt(userId) {
+  try {
+    const value = Number(window.localStorage.getItem(feedbackPromptKey(userId)) || '0');
+    if (!value) return true;
+    return Date.now() - value >= FEEDBACK_PROMPT_COOLDOWN_MS;
+  } catch {
+    return true;
+  }
+}
+
+function dismissFeedbackPrompt(userId) {
+  window.localStorage.setItem(feedbackPromptKey(userId), String(Date.now()));
 }
 
 function isPriceStale(snapshot) {

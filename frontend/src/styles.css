@@ -311,6 +311,66 @@ td.mid.sticky-col {
   color: #5b6674;
 }
 
+.soft-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dce2e8;
+  background: white;
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.soft-prompt p {
+  margin: 4px 0 0;
+  color: #5b6674;
+  font-size: 13px;
+}
+
+.soft-prompt-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 28, 38, 0.35);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 50;
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  background: white;
+  border: 1px solid #dce2e8;
+  border-radius: 6px;
+  padding: 14px;
+}
+
+.modal-card form {
+  display: grid;
+  gap: 10px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
 .selected-row td:not(.good):not(.bad):not(.strong):not(.watch):not(.mid) {
   background: #e8f2eb;
 }
@@ -419,5 +479,10 @@ code {
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid #dce2e8;
+  }
+
+  .soft-prompt {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

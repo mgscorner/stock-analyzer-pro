@@ -295,6 +295,22 @@ the frontend heartbeat updates watchlist_activity only while the browser session
 if the browser closes unexpectedly, the scheduler waits for the active window to expire before downgrading that watchlist
 ```
 
+## User Feedback
+
+Before using the in-app feedback form, run this SQL in Supabase:
+
+```text
+production_app/docs/user_feedback_schema.sql
+```
+
+Current behavior:
+
+```text
+frontend shows a subtle feedback prompt only occasionally
+users can also open Feedback from the sidebar
+submissions are written directly to public.user_feedback
+```
+
 Planned improvement:
 
 ```text
