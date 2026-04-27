@@ -111,6 +111,9 @@ WORKER_OWNERSHIP_TTL_CLOSED_MINUTES=20160
 WORKER_QUOTE_MIN_INTERVAL_MS=300
 WORKER_HISTORY_MIN_INTERVAL_MS=500
 WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
+WORKER_SCHEDULER_INTERVAL_SECONDS=120
+WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE=30
+WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE=15
 ```
 
 | Variable | Required | Default | Purpose |
@@ -146,6 +149,9 @@ WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
 | `WORKER_QUOTE_MIN_INTERVAL_MS` | optional | `300` | Minimum spacing for quote-layer calls when the limiter applies. |
 | `WORKER_HISTORY_MIN_INTERVAL_MS` | optional | `500` | Minimum spacing for history-layer calls when the limiter applies. |
 | `WORKER_FUNDAMENTALS_MIN_INTERVAL_MS` | optional | `30000` | Minimum spacing for fundamentals-layer attempts when the limiter applies. |
+| `WORKER_SCHEDULER_INTERVAL_SECONDS` | optional | `120` | Sleep between scheduler cycles. |
+| `WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE` | optional | `30` | Max watchlist symbols processed per scheduler cycle. |
+| `WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE` | optional | `15` | Max non-watchlist universe symbols processed per closed-market scheduler cycle. |
 
 Market mode policy:
 
@@ -224,6 +230,48 @@ Turn it off for normal production:
 
 ```text
 WORKER_DEBUG_MARKET_REQUESTS=0
+```
+
+## Background Scheduler
+
+Run the scheduler as a separate long-running process from the API worker:
+
+```powershell
+cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+python run_scheduler.py
+```
+
+Current scheduler behavior:
+
+```text
+every cycle:
+    load distinct watchlist symbols
+    load stock_universes symbols
+    refresh due watchlist symbols first
+    only process non-watchlist universe symbols when the market is closed
+```
+
+Priority rules:
+
+```text
+watchlist symbols first
+non-watchlist universe symbols second
+within a symbol, fundamentals/history due work ranks above price-only work
+```
+
+Closed-market behavior:
+
+```text
+watchlist symbols still refresh by TTL
+non-watchlist universe work runs only after hours and on weekends
+closed-market universe passes skip price-only refreshes
+```
+
+Current limitation:
+
+```text
+the scheduler does not yet persist true per-user visible-state priority
+it treats all watchlist symbols as the high-priority user set
 ```
 
 ### SEC Fundamentals Bootstrap

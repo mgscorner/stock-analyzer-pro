@@ -41,6 +41,9 @@ class Settings:
     quote_min_interval_ms: int
     history_min_interval_ms: int
     fundamentals_min_interval_ms: int
+    scheduler_interval_seconds: int
+    scheduler_watchlist_batch_size: int
+    scheduler_universe_batch_size: int
 
 
 def get_settings() -> Settings:
@@ -80,6 +83,9 @@ def get_settings() -> Settings:
         quote_min_interval_ms=safe_int(os.getenv("WORKER_QUOTE_MIN_INTERVAL_MS"), 300),
         history_min_interval_ms=safe_int(os.getenv("WORKER_HISTORY_MIN_INTERVAL_MS"), 500),
         fundamentals_min_interval_ms=safe_int(os.getenv("WORKER_FUNDAMENTALS_MIN_INTERVAL_MS"), 30000),
+        scheduler_interval_seconds=safe_int(os.getenv("WORKER_SCHEDULER_INTERVAL_SECONDS"), 120),
+        scheduler_watchlist_batch_size=safe_int(os.getenv("WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE"), 30),
+        scheduler_universe_batch_size=safe_int(os.getenv("WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE"), 15),
     )
 
 
