@@ -26,28 +26,76 @@ function sortAlerts(rows) {
   });
 }
 
+function shiftDays(isoDate, days) {
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
   const containerRef = useRef(null);
+  const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const priceLinesRef = useRef([]);
   const [alerts, setAlerts] = useState([]);
-  const [selectedAlert, setSelectedAlert] = useState('');
+  const [editingAlertId, setEditingAlertId] = useState('');
+  const [alertInput, setAlertInput] = useState('');
+  const [alertMessage, setAlertMessage] = useState('');
+  const [hoverPrice, setHoverPrice] = useState(null);
+  const [previewArmed, setPreviewArmed] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const history = Array.isArray(snapshot?.history_data) ? snapshot.history_data : [];
   const chartData = useMemo(() => toChartData(history), [history]);
   const currentPrice = Number(snapshot?.price || 0);
   const currentLabel = displayPrice(currentPrice);
   const lastClose = chartData.length ? chartData[chartData.length - 1].value : 0;
+  const referencePrice = currentPrice > 0 ? currentPrice : lastClose;
+  const stepValue = Math.max(0.01, Number((referencePrice >= 100 ? 0.1 : 0.01).toFixed(2)));
+  const currentAlert = alerts.find((alert) => alert.id === editingAlertId);
   const activeAlerts = alerts.filter((alert) => alert.active);
+  const maxAlertsReached = alerts.length >= 4;
 
   useEffect(() => {
     if (!symbol || !userId) {
       setAlerts([]);
-      setSelectedAlert('');
+      setEditingAlertId('');
+      setAlertInput('');
+      setPreviewArmed(false);
       return;
     }
     loadAlerts();
   }, [symbol, userId]);
+
+  useEffect(() => {
+    const selected = currentAlert;
+    if (selected) {
+      setAlertInput(String(Number(selected.threshold || 0).toFixed(2)));
+      setPreviewArmed(false);
+      return;
+    }
+    if (previewArmed) {
+      return;
+    }
+    if (referencePrice > 0) {
+      setAlertInput(String(Number(referencePrice).toFixed(2)));
+      return;
+    }
+    setAlertInput('');
+    setPreviewArmed(false);
+  }, [editingAlertId, currentAlert, referencePrice, previewArmed]);
+
+  useEffect(() => {
+    if (!editingAlertId || !currentAlert?.active) return undefined;
+    const nextValue = Number(alertInput);
+    const currentValue = Number(currentAlert.threshold || 0);
+    if (!Number.isFinite(nextValue) || !Number.isFinite(currentValue)) return undefined;
+    if (Number(nextValue.toFixed(2)) === Number(currentValue.toFixed(2))) return undefined;
+    const timer = window.setTimeout(() => {
+      updateAlertThreshold(nextValue);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [alertInput, editingAlertId, currentAlert?.active, currentAlert?.threshold]);
 
   async function loadAlerts() {
     const { data, error } = await supabase
@@ -57,14 +105,13 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
       .eq('symbol', symbol)
       .order('created_at');
     if (error) {
-      console.warn('alert load failed', error.message);
+      setAlertMessage(`Alert load failed: ${error.message}`);
       return;
     }
     const next = sortAlerts(data || []);
     setAlerts(next);
-    if (!next.find((row) => row.id === selectedAlert)) {
-      setSelectedAlert(next[0]?.id || '');
-    }
+    setEditingAlertId((current) => (next.some((row) => row.id === current) ? current : ''));
+    setAlertMessage('');
   }
 
   useEffect(() => {
@@ -103,11 +150,28 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     });
 
     series.setData(chartData);
-    chart.timeScale().fitContent();
+    const lastTime = chartData[chartData.length - 1].time;
+    const targetFrom = shiftDays(lastTime, -183);
+    const fromIndex = Math.max(
+      0,
+      chartData.findIndex((row) => row.time >= targetFrom)
+    );
+    chart.timeScale().setVisibleRange({
+      from: chartData[fromIndex].time,
+      to: lastTime,
+    });
+    chartRef.current = chart;
     seriesRef.current = series;
+    chart.subscribeCrosshairMove((param) => {
+      if (!param?.point || param.point.y == null) return;
+      const price = series.coordinateToPrice(param.point.y);
+      if (!Number.isFinite(price) || price <= 0) return;
+      setHoverPrice(Number(price.toFixed(2)));
+    });
 
     return () => {
       priceLinesRef.current = [];
+      chartRef.current = null;
       seriesRef.current = null;
       chart.remove();
     };
@@ -116,6 +180,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
+
     for (const line of priceLinesRef.current) {
       try {
         series.removePriceLine(line);
@@ -137,20 +202,37 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     }
 
     activeAlerts.forEach((alert, index) => {
-      const threshold = Number(alert.threshold || 0);
+      const isSelected = alert.id === editingAlertId;
+      const liveThreshold = isSelected && alertInput ? Number(alertInput) : Number(alert.threshold || 0);
+      const threshold = Number.isFinite(liveThreshold) && liveThreshold > 0 ? liveThreshold : Number(alert.threshold || 0);
       if (!Number.isFinite(threshold) || threshold <= 0) return;
+      const isBelow = String(alert.condition_type || '').toLowerCase() === 'price_below';
       priceLinesRef.current.push(
         series.createPriceLine({
           price: threshold,
-          color: alert.id === selectedAlert ? '#b42318' : '#f97316',
-          lineWidth: alert.id === selectedAlert ? 2 : 1,
+          color: isBelow ? '#8b1e1e' : '#f59e0b',
+          lineWidth: isSelected ? 3 : 2,
           lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `Alert ${index + 1}`,
+          axisLabelVisible: isSelected,
+          title: isSelected ? `Alert ${index + 1}` : '',
         })
       );
     });
-  }, [activeAlerts, selectedAlert, currentPrice]);
+
+    const preview = Number(alertInput);
+    if (previewArmed && !editingAlertId && Number.isFinite(preview) && preview > 0) {
+      priceLinesRef.current.push(
+        series.createPriceLine({
+          price: preview,
+          color: '#2f6fed',
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          axisLabelVisible: true,
+          title: 'Preview',
+        })
+      );
+    }
+  }, [activeAlerts, editingAlertId, currentPrice, alertInput, currentAlert, previewArmed]);
 
   if (!symbol) {
     return <div className="chart-panel muted">Select a row to show its cached chart.</div>;
@@ -160,68 +242,151 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     return <div className="chart-panel muted">{symbol}: no cached chart history yet.</div>;
   }
 
-  async function addAlert() {
-    const base = currentPrice > 0 ? currentPrice : lastClose;
-    if (!base || !Number.isFinite(base)) return;
-    const rounded = Number(base.toFixed(2));
+  function inferConditionType(value) {
+    if (referencePrice <= 0) return null;
+    if (value > referencePrice) return 'price_above';
+    if (value < referencePrice) return 'price_below';
+    return null;
+  }
+
+  async function saveAlert() {
+    setAlertMessage('');
+    const value = Number(alertInput);
+    if (!Number.isFinite(value) || value <= 0) {
+      setAlertMessage('Enter a valid alert price.');
+      return;
+    }
+
+    const conditionType = inferConditionType(value);
+    if (!conditionType) {
+      setAlertMessage('Alert price must be above or below the current price.');
+      return;
+    }
+
+    if (editingAlertId && currentAlert?.active) {
+      await updateAlertThreshold(value);
+      return;
+    }
+
+    if (maxAlertsReached) {
+      setAlertMessage('Maximum 4 alerts per chart.');
+      return;
+    }
+
     const payload = {
       user_id: userId,
       symbol,
       watchlist_name: activeList || null,
-      condition_type: 'price_above',
-      threshold: rounded,
+      condition_type: conditionType,
+      threshold: value,
       interval_minutes: 1,
       active: true,
     };
-    const { error } = await supabase.from('alerts').insert(payload);
+
+    const { data, error } = await supabase
+      .from('alerts')
+      .insert([payload])
+      .select('id,symbol,condition_type,threshold,active,last_triggered_at,interval_minutes')
+      .single();
     if (error) {
-      console.warn('alert insert failed', error.message);
+      setAlertMessage(`Alert insert failed: ${error.message}`);
       return;
     }
-    await loadAlerts();
+    const next = sortAlerts([...alerts, data]);
+    setAlerts(next);
+    setEditingAlertId(data.id);
+    setPreviewArmed(false);
+    setAlertMessage('Alert created.');
   }
 
-  async function moveAlert(direction) {
-    const current = alerts.find((alert) => alert.id === selectedAlert);
-    if (!current) return;
-    const base = Number(current.threshold || 0);
-    const step = Math.max(0.01, Number((base * 0.01).toFixed(2)));
-    const updated = Math.max(0.01, Number((base + step * direction).toFixed(2)));
-    const { error } = await supabase
-      .from('alerts')
-      .update({ threshold: updated, active: true, updated_at: new Date().toISOString() })
-      .eq('id', current.id);
-    if (error) {
-      console.warn('alert update failed', error.message);
+  async function updateAlertThreshold(value) {
+    const conditionType = inferConditionType(value);
+    if (!conditionType) {
+      setAlertMessage('Alert price must be above or below the current price.');
       return;
     }
-    await loadAlerts();
+    setSavingEdit(true);
+    const { data, error } = await supabase
+      .from('alerts')
+      .update({
+        threshold: value,
+        condition_type: conditionType,
+        active: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', editingAlertId)
+      .select('id,symbol,condition_type,threshold,active,last_triggered_at,interval_minutes')
+      .single();
+    setSavingEdit(false);
+    if (error) {
+      setAlertMessage(`Alert update failed: ${error.message}`);
+      return;
+    }
+    const next = sortAlerts(alerts.map((alert) => (alert.id === editingAlertId ? data : alert)));
+    setAlerts(next);
+    setAlertMessage('Alert updated.');
   }
 
   async function removeAlert() {
-    if (!selectedAlert) return;
-    const { error } = await supabase.from('alerts').delete().eq('id', selectedAlert);
+    if (!editingAlertId) return;
+    setAlertMessage('');
+
+    const removeId = editingAlertId;
+    const next = alerts.filter((alert) => alert.id !== removeId);
+    setAlerts(next);
+    setEditingAlertId(next[0]?.id || '');
+    setPreviewArmed(false);
+
+    if (next[0]) {
+      setAlertInput(String(Number(next[0].threshold || 0).toFixed(2)));
+    } else if (referencePrice > 0) {
+      setAlertInput(String(Number(referencePrice).toFixed(2)));
+    } else {
+      setAlertInput('');
+    }
+
+    const { error } = await supabase.from('alerts').delete().eq('id', removeId);
     if (error) {
-      console.warn('alert delete failed', error.message);
+      setAlertMessage(`Alert delete failed: ${error.message}`);
+      await loadAlerts();
       return;
     }
-    await loadAlerts();
+
+    setAlertMessage('Alert removed.');
   }
 
   async function reactivateAlert() {
-    if (!selectedAlert) return;
-    const { error } = await supabase
+    if (!editingAlertId) return;
+    setAlertMessage('');
+    const { data, error } = await supabase
       .from('alerts')
       .update({ active: true, updated_at: new Date().toISOString() })
-      .eq('id', selectedAlert);
+      .eq('id', editingAlertId)
+      .select('id,symbol,condition_type,threshold,active,last_triggered_at,interval_minutes')
+      .single();
     if (error) {
-      console.warn('alert reactivate failed', error.message);
+      setAlertMessage(`Alert reactivate failed: ${error.message}`);
       return;
     }
-    await loadAlerts();
+    const next = sortAlerts(alerts.map((alert) => (alert.id === editingAlertId ? data : alert)));
+    setAlerts(next);
+    setAlertMessage('Alert reactivated.');
   }
 
-  const currentAlert = alerts.find((alert) => alert.id === selectedAlert);
+  function armCreateModeAt(value) {
+    if (!Number.isFinite(value) || value <= 0) return;
+    setEditingAlertId('');
+    setAlertInput(String(Number(value).toFixed(2)));
+    setPreviewArmed(true);
+    setAlertMessage('Preview moved. Click Create Alert to save it.');
+  }
+
+  function selectAlertForEdit(alert) {
+    setEditingAlertId(alert.id);
+    setAlertInput(String(Number(alert.threshold || 0).toFixed(2)));
+    setPreviewArmed(false);
+    setAlertMessage('Editing selected alert.');
+  }
 
   return (
     <section className="chart-panel">
@@ -233,21 +398,82 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
         <span>Cached history with live table price line</span>
       </div>
       <div className="chart-toolbar">
-        <button className="ghost" onClick={addAlert}>Add Alert</button>
-        <button className="ghost" disabled={!selectedAlert || !currentAlert?.active} onClick={() => moveAlert(1)}>Alert Up</button>
-        <button className="ghost" disabled={!selectedAlert || !currentAlert?.active} onClick={() => moveAlert(-1)}>Alert Down</button>
-        <button className="ghost" disabled={!selectedAlert || currentAlert?.active} onClick={reactivateAlert}>Reactivate</button>
-        <button className="ghost danger" disabled={!selectedAlert} onClick={removeAlert}>Remove Alert</button>
-        <select value={selectedAlert} onChange={(event) => setSelectedAlert(event.target.value)}>
-          <option value="">Select alert</option>
+        <label className="alert-input-group alert-input-group-edit">
+          <span>Alert Price</span>
+          <input
+            type="number"
+            step={stepValue}
+            min="0.01"
+            value={alertInput}
+            onChange={(event) => {
+              setAlertInput(event.target.value);
+              if (!editingAlertId) {
+                setPreviewArmed(true);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                event.stopPropagation();
+              }
+            }}
+            onWheel={(event) => {
+              if (document.activeElement === event.currentTarget) {
+                event.stopPropagation();
+              }
+            }}
+          />
+          <button type="button" className="ghost" onClick={saveAlert}>
+            {editingAlertId && currentAlert?.active ? 'Update Alert' : 'Create Alert'}
+          </button>
+        </label>
+        <button
+          type="button"
+          className="ghost"
+          disabled={!editingAlertId || currentAlert?.active}
+          onClick={reactivateAlert}
+        >
+          Reactivate
+        </button>
+        <button type="button" className="ghost danger" disabled={!editingAlertId} onClick={removeAlert}>
+          Remove Alert
+        </button>
+        <select value={editingAlertId} onChange={(event) => {
+          const id = event.target.value;
+          if (!id) {
+            setEditingAlertId('');
+            if (referencePrice > 0) {
+              setAlertInput(String(Number(referencePrice).toFixed(2)));
+            } else {
+              setAlertInput('');
+            }
+            setPreviewArmed(false);
+            setAlertMessage('');
+            return;
+          }
+          const alert = alerts.find((row) => row.id === id);
+          if (alert) selectAlertForEdit(alert);
+        }}>
+          <option value="">New alert</option>
           {alerts.map((alert, index) => (
             <option key={alert.id} value={alert.id}>
-              {`Alert ${index + 1} - ${displayPrice(alert.threshold)} - ${alert.active ? 'Active' : 'Triggered'}`}
+              {`Alert ${index + 1} - ${alert.condition_type === 'price_below' ? 'Below' : 'Above'} - ${displayPrice(alert.threshold)} - ${alert.active ? 'Active' : 'Triggered'}`}
             </option>
           ))}
         </select>
       </div>
-      <div ref={containerRef} className="history-chart-advanced" aria-label={`${symbol} chart`} />
+      <div
+        ref={containerRef}
+        className="history-chart-advanced"
+        aria-label={`${symbol} chart`}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          if (hoverPrice) armCreateModeAt(hoverPrice);
+        }}
+      />
+      <div className="chart-alert-status">
+        {alertMessage || (!editingAlertId && maxAlertsReached ? 'Maximum 4 alerts reached. Remove one to create another.' : ' ')}
+      </div>
+      {savingEdit ? <div className="chart-alert-status">Saving alert...</div> : null}
     </section>
   );
 }
