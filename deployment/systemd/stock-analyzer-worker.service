@@ -1,0 +1,15 @@
+[Unit]
+Description=Stock Analyzer Worker API
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/stock-analyzer/app/production_app/worker
+EnvironmentFile=/opt/stock-analyzer/env/worker.env
+ExecStart=/opt/stock-analyzer/venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

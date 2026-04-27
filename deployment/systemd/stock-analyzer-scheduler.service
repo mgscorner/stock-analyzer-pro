@@ -1,0 +1,16 @@
+[Unit]
+Description=Stock Analyzer Background Scheduler
+After=network.target stock-analyzer-worker.service
+Requires=stock-analyzer-worker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/stock-analyzer/app/production_app/worker
+EnvironmentFile=/opt/stock-analyzer/env/worker.env
+ExecStart=/opt/stock-analyzer/venv/bin/python run_scheduler.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
