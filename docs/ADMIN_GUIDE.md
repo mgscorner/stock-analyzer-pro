@@ -90,6 +90,24 @@ WORKER_ALLOWED_ORIGINS=http://localhost:5173
 WORKER_DEBUG_MARKET_REQUESTS=0
 WORKER_ENABLE_REQUEST_LIMITER=1
 WORKER_ENABLE_QUOTE_FAST_LANE=0
+WORKER_ENABLE_FUNDAMENTALS_FALLBACKS=0
+WORKER_FUNDAMENTALS_PROVIDER_ORDER=yfinance,sec,finnhub_reported,fmp
+WORKER_MARKET_MAIN_OPEN_HOUR=9
+WORKER_MARKET_MAIN_OPEN_MINUTE=30
+WORKER_MARKET_MAIN_CLOSE_HOUR=16
+WORKER_MARKET_MAIN_CLOSE_MINUTE=0
+WORKER_MARKET_PRE_HOURS=4
+WORKER_MARKET_POST_HOURS=4
+WORKER_PRICE_TTL_MAIN_MINUTES=5
+WORKER_PRICE_TTL_PREMARKET_MINUTES=5
+WORKER_PRICE_TTL_POSTMARKET_MINUTES=5
+WORKER_PRICE_TTL_CLOSED_MINUTES=240
+WORKER_HISTORY_TTL_MAIN_MINUTES=1440
+WORKER_HISTORY_TTL_CLOSED_MINUTES=10080
+WORKER_FUNDAMENTALS_TTL_MAIN_MINUTES=1440
+WORKER_FUNDAMENTALS_TTL_CLOSED_MINUTES=4320
+WORKER_OWNERSHIP_TTL_MAIN_MINUTES=10080
+WORKER_OWNERSHIP_TTL_CLOSED_MINUTES=20160
 WORKER_QUOTE_MIN_INTERVAL_MS=300
 WORKER_HISTORY_MIN_INTERVAL_MS=500
 WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
@@ -100,16 +118,42 @@ WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
 | `SUPABASE_URL` | yes | none | Supabase project URL used by the worker. |
 | `SUPABASE_ANON_KEY` | yes | none | Used by the worker to validate incoming user access tokens. |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | none | Server-only key used by the worker to write trusted data such as `stock_snapshots` and `refresh_jobs`. |
-| `FINNHUB_API_KEY` | optional | empty | Enables Finnhub quote/profile and reported-financials fallback calls. |
-| `FMP_API_KEY` | optional | empty | Enables FMP stable profile and stable income-statement calls. |
+| `FINNHUB_API_KEY` | optional | empty | Makes Finnhub available to the worker when the configured provider order reaches it. |
+| `FMP_API_KEY` | optional | empty | Makes FMP available to the worker when the configured provider order reaches it. |
 | `SEC_USER_AGENT` | recommended | development placeholder | User-Agent sent to SEC EDGAR APIs. Set this to a real name/app and email before production. |
 | `WORKER_ALLOWED_ORIGINS` | yes | `http://localhost:5173` | Comma-separated CORS allowlist for browser origins allowed to call the worker. |
 | `WORKER_DEBUG_MARKET_REQUESTS` | optional | `0` | When `1`, writes provider/API request attempts to `public.market_request_logs`. |
 | `WORKER_ENABLE_REQUEST_LIMITER` | optional | `1` | Enables spacing between outbound provider calls. Keep enabled by default. |
 | `WORKER_ENABLE_QUOTE_FAST_LANE` | optional | `0` | Allows the first visible-list quote batch attempt to bypass the quote limiter. Off by default. |
+| `WORKER_ENABLE_FUNDAMENTALS_FALLBACKS` | optional | `0` | Enables provider fallbacks for annual fundamentals. Off by default. |
+| `WORKER_FUNDAMENTALS_PROVIDER_ORDER` | optional | `yfinance,sec,finnhub_reported,fmp` | Comma-separated provider priority for fundamentals. Only the first provider is used unless fallbacks are explicitly enabled. |
+| `WORKER_MARKET_MAIN_OPEN_HOUR` | optional | `9` | Main-session open hour in America/New_York. |
+| `WORKER_MARKET_MAIN_OPEN_MINUTE` | optional | `30` | Main-session open minute in America/New_York. |
+| `WORKER_MARKET_MAIN_CLOSE_HOUR` | optional | `16` | Main-session close hour in America/New_York. |
+| `WORKER_MARKET_MAIN_CLOSE_MINUTE` | optional | `0` | Main-session close minute in America/New_York. |
+| `WORKER_MARKET_PRE_HOURS` | optional | `4` | Pre-market window length before the main session. |
+| `WORKER_MARKET_POST_HOURS` | optional | `4` | Post-market window length after the main session. |
+| `WORKER_PRICE_TTL_MAIN_MINUTES` | optional | `5` | Visible price TTL during the main session. |
+| `WORKER_PRICE_TTL_PREMARKET_MINUTES` | optional | `5` | Visible price TTL during pre-market. |
+| `WORKER_PRICE_TTL_POSTMARKET_MINUTES` | optional | `5` | Visible price TTL during post-market. |
+| `WORKER_PRICE_TTL_CLOSED_MINUTES` | optional | `240` | Visible price TTL when the market is closed. |
+| `WORKER_HISTORY_TTL_MAIN_MINUTES` | optional | `1440` | History TTL during the main session. |
+| `WORKER_HISTORY_TTL_CLOSED_MINUTES` | optional | `10080` | History TTL when the market is closed. |
+| `WORKER_FUNDAMENTALS_TTL_MAIN_MINUTES` | optional | `1440` | Fundamentals TTL during the main session. |
+| `WORKER_FUNDAMENTALS_TTL_CLOSED_MINUTES` | optional | `4320` | Fundamentals TTL when the market is closed. |
+| `WORKER_OWNERSHIP_TTL_MAIN_MINUTES` | optional | `10080` | Ownership TTL during the main session. |
+| `WORKER_OWNERSHIP_TTL_CLOSED_MINUTES` | optional | `20160` | Ownership TTL when the market is closed. |
 | `WORKER_QUOTE_MIN_INTERVAL_MS` | optional | `300` | Minimum spacing for quote-layer calls when the limiter applies. |
 | `WORKER_HISTORY_MIN_INTERVAL_MS` | optional | `500` | Minimum spacing for history-layer calls when the limiter applies. |
 | `WORKER_FUNDAMENTALS_MIN_INTERVAL_MS` | optional | `30000` | Minimum spacing for fundamentals-layer attempts when the limiter applies. |
+
+Market mode policy:
+
+```text
+main session: use the main-session TTLs
+pre/post market: use the pre/post price TTLs and the closed-style slower non-price TTLs
+weekends and overnight: use the closed TTLs and let the worker spend spare capacity on lower-priority maintenance
+```
 
 Boolean true values:
 
@@ -131,7 +175,7 @@ no
 
 ### Provider Key Behavior
 
-If `FINNHUB_API_KEY` is present, the worker can use:
+If `FINNHUB_API_KEY` is present, the worker can use Finnhub when the configured provider order reaches it:
 
 ```text
 Finnhub quote
@@ -139,7 +183,7 @@ Finnhub profile
 Finnhub stock/financials-reported
 ```
 
-If `FMP_API_KEY` is present, the worker can use:
+If `FMP_API_KEY` is present, the worker can use FMP when the configured provider order reaches it:
 
 ```text
 FMP stable/profile
@@ -155,12 +199,12 @@ visible price:
     Yahoo Chart fallback
 
 new ticker fundamentals:
-    SEC EDGAR companyfacts for annual revenue/profit
-    Finnhub reported financials fallback
-    FMP stable income statement fallback
+    yfinance annual financials first
+    optional provider fallbacks only when WORKER_ENABLE_FUNDAMENTALS_FALLBACKS=1
+    provider order controlled by WORKER_FUNDAMENTALS_PROVIDER_ORDER
 ```
 
-SEC EDGAR does not require an API key and is preferred for annual revenue/profit when a symbol maps to a SEC CIK. It should not be treated as an ownership source.
+The SEC annual financials path remains in the codebase as a fallback/diagnostic provider, but it is not automatically chained unless fundamentals fallbacks are enabled. Visible ownership now comes from Yahoo major holders, not SEC 13F.
 
 ### Debug Settings
 
@@ -271,7 +315,7 @@ fundamentals
 
 Use this for production preload batches when the goal is a complete `stock_snapshots` row.
 
-The script processes symbols one by one. For each symbol it fetches quote, history, and fundamentals in parallel, then writes one safely merged snapshot. After writing, it recalculates cached SEC ownership percent if an ownership row already exists.
+The script processes symbols one by one. For each symbol it fetches quote, history, and fundamentals in parallel, then writes one safely merged snapshot. The visible ownership field is fetched in the same symbol pass from Yahoo major holders and written into `stock_snapshots.inst_ownership` when a usable value exists.
 
 Dry-run a few symbols:
 
@@ -298,9 +342,9 @@ Production-safe default behavior:
 ```text
 one symbol at a time
 quote/history/fundamentals run in parallel for that symbol
+ownership is bootstrapped as part of the same symbol run
 shared provider limiter prevents same-layer bursts
 existing good DB values are protected by the normal safe merge
-ownership percent is recalculated only from already cached SEC shares
 refetch-after-minutes skips rows that are still fresh enough for the current run
 ```
 
@@ -308,7 +352,6 @@ Useful controls:
 
 ```powershell
 python bootstrap_full_cache.py --universe sp500 --limit 25 --quote-spacing-ms 300 --history-spacing-ms 750 --fundamentals-spacing-ms 750
-python bootstrap_full_cache.py --symbols AAPL --skip-ownership-recalc
 python bootstrap_full_cache.py --universe sp500 --missing-only --refetch-after-minutes 15 --limit 25
 ```
 
@@ -324,7 +367,7 @@ This stamps only rows that already contain real price, history, or fundamentals 
 
 ### SEC 13F Ownership Probe
 
-Prototype institutional ownership from SEC 13F data sets:
+Prototype institutional ownership from SEC 13F data sets. This is now diagnostic only and is not the live visible ownership source:
 
 ```powershell
 cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
@@ -403,6 +446,8 @@ do not show missing ownership as 0.00%
 do not overwrite a positive cached ownership value with null or zero
 cache report period and calculated_at so users understand the 13F lag
 run this as an admin/background job, not during normal list loading
+
+Visible ownership in the app now comes from Yahoo major holders. The SEC 13F pipeline remains available as a research/diagnostic path and should not replace the Yahoo value in the user-facing table.
 ```
 
 Status meanings:

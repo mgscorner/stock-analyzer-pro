@@ -262,6 +262,83 @@ def upsert_snapshot_ownership(client, rows: list[dict[str, Any]]) -> None:
         ).eq("symbol", row["symbol"]).execute()
 
 
+def bootstrap_ownership_for_symbols(
+    client,
+    symbols: list[str],
+    report_period: str | None = None,
+    missing_only: bool = True,
+    dry_run: bool = False,
+    spacing_ms: int = 50,
+) -> int:
+    symbols = dedupe_symbols([normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)])
+    if not symbols:
+        print("No symbols provided.")
+        return 0
+
+    dataset_url = latest_13f_dataset_url()
+    dataset_path = download_to_cache(dataset_url, False)
+    report_period = report_period or report_period_from_dataset(dataset_path)
+    if missing_only:
+        symbols = filter_missing_ownership(client, symbols, report_period)
+    if not symbols:
+        print(f"No symbols need ownership bootstrap for report_period={report_period}.")
+        return 0
+
+    symbol_cusips = resolve_symbol_cusips(symbols, [])
+    resolved = {symbol: cusip for symbol, cusip in symbol_cusips.items() if cusip}
+    unresolved = [symbol for symbol, cusip in symbol_cusips.items() if not cusip]
+    if unresolved:
+        print(f"unresolved_cusips: {', '.join(unresolved[:25])}")
+        if len(unresolved) > 25:
+            print(f"  ... {len(unresolved) - 25} more")
+    if not resolved:
+        print("No CUSIPs resolved.")
+        return 1
+
+    print(f"Ownership bootstrap: {len(resolved)} symbols")
+    print(f"report_period: {report_period}")
+    print(f"dry_run: {dry_run}")
+    print(f"dataset: {dataset_path.name}")
+    print(f"spacing_ms: {spacing_ms}")
+    print("")
+
+    aggregates = aggregate_dataset_for_cusips(dataset_path, set(resolved.values()))
+    rows = []
+    snapshot_updates = []
+    started = time.time()
+    for symbol, cusip in resolved.items():
+        aggregate = aggregates.get(cusip) or empty_aggregate()
+        row = ownership_row(symbol, cusip, dataset_path.name, report_period, aggregate, client)
+        rows.append(row)
+        if number_or_zero(row.get("estimated_ownership_percent")) > 0:
+            snapshot_updates.append(
+                {
+                    "symbol": symbol,
+                    "inst_ownership": row["estimated_ownership_percent"],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        print(
+            f"{symbol}: holders={row['holder_count']} "
+            f"shares={row['institutional_shares']} "
+            f"ownership={row['estimated_ownership_percent']} "
+            f"status={row['status']}"
+        )
+        if spacing_ms > 0:
+            time.sleep(spacing_ms / 1000)
+
+    if not dry_run:
+        upsert_ownership_rows(client, rows)
+        upsert_snapshot_ownership(client, snapshot_updates)
+        print(f"database: upserted {len(rows)} ownership rows")
+        print(f"database: updated {len(snapshot_updates)} stock_snapshots inst_ownership values")
+
+    duration = time.time() - started
+    print("")
+    print(f"done: {len(rows)} ownership rows, {len(unresolved)} unresolved, {duration:.1f}s")
+    return len(rows)
+
+
 def recalculate_cached_ownership(
     client,
     symbols: list[str],

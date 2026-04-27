@@ -8,12 +8,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.market_data import fetch_snapshot, normalize_symbol
+from app.market_data import fetch_snapshot, normalize_symbol, number_or_zero
 from app.market_debug import MarketRequestLogger
 from app.rate_limit import MarketRequestLimiter
 from app.settings import get_settings
 from app.supabase_db import make_service_client, merge_snapshot, upsert_snapshot
-from bootstrap_ownership import latest_cached_report_period, recalculate_cached_ownership
 
 
 LAYERS = ["quote", "history", "fundamentals"]
@@ -45,8 +44,6 @@ def main() -> int:
         history_min_interval_ms=args.history_spacing_ms,
         fundamentals_min_interval_ms=args.fundamentals_spacing_ms,
     )
-    ownership_report_period = latest_cached_report_period(client) if not args.skip_ownership_recalc else ""
-
     print(f"Full cache bootstrap: {len(symbols)} symbols")
     if args.universe:
         print(f"universe: {', '.join(args.universe)}")
@@ -61,9 +58,6 @@ def main() -> int:
     print(f"quote_spacing_ms: {args.quote_spacing_ms if not args.no_limiter else 0}")
     print(f"history_spacing_ms: {args.history_spacing_ms if not args.no_limiter else 0}")
     print(f"fundamentals_spacing_ms: {args.fundamentals_spacing_ms if not args.no_limiter else 0}")
-    print(f"ownership_recalc: {not args.skip_ownership_recalc and bool(ownership_report_period)}")
-    if ownership_report_period:
-        print(f"ownership_report_period: {ownership_report_period}")
     print("")
 
     ok_count = 0
@@ -80,16 +74,6 @@ def main() -> int:
             )
             if not args.dry_run:
                 upsert_snapshot(client, snapshot)
-                if ownership_report_period:
-                    recalculate_cached_ownership(
-                        client=client,
-                        symbols=[symbol],
-                        report_period=ownership_report_period,
-                        missing_only=False,
-                        limit=1,
-                        dry_run=False,
-                        spacing_ms=0,
-                    )
             ok_count += 1
             print(
                 "  ok "
@@ -99,7 +83,7 @@ def main() -> int:
                 f"quote={snapshot.get('quote_status')} "
                 f"history={snapshot.get('history_status')} "
                 f"fundamentals={snapshot.get('fundamentals_status')} "
-                f"snapshot={snapshot.get('snapshot_status')}"
+                f"ownership={snapshot.get('inst_ownership')}"
             )
             for layer, message in layer_errors:
                 print(f"  layer_warning {layer}: {message}")
@@ -188,7 +172,7 @@ def merge_order(snapshot: dict[str, Any]) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build complete stock_snapshots rows by fetching quote/history/fundamentals per ticker.",
+        description="Build complete stock_snapshots rows by fetching quote/history/fundamentals/ownership per ticker.",
     )
     parser.add_argument("--symbols", nargs="*", default=[], help="Ticker symbols, for example --symbols AAPL MSFT.")
     parser.add_argument("--file", type=Path, help="Text or CSV file containing symbols.")
@@ -212,11 +196,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=750,
         help="Fundamentals request spacing for admin bootstrap. Default 750.",
-    )
-    parser.add_argument(
-        "--skip-ownership-recalc",
-        action="store_true",
-        help="Do not recalculate cached SEC ownership percentage after writing a symbol.",
     )
     return parser.parse_args()
 

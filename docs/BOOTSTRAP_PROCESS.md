@@ -172,7 +172,7 @@ Execution model:
 process symbols one at a time
 for each symbol, fetch quote/history/fundamentals in parallel
 merge once using the production-safe stock_snapshots merge
-recalculate cached SEC ownership percent after price and market cap exist
+fetch visible ownership for the same symbol in the same run
 refetch-after-minutes can be used to revisit only rows older than the chosen age window
 ```
 
@@ -181,19 +181,19 @@ refetch-after-minutes can be used to revisit only rows older than the chosen age
 Preferred source:
 
 ```text
-SEC EDGAR companyfacts
+yfinance annual financials
 ```
 
 Actions:
 
 ```text
 resolve ticker to CIK
-fetch companyfacts
+fetch annual financials from the primary provider
 extract annual revenue and net income/profit
 accept only annual filing facts
-store five annual values when available
+store the annual values when available
 mark fundamentals complete when valid annual values exist
-fallback to Finnhub/FMP only when SEC cannot cover the symbol
+optional fallbacks stay disabled unless explicitly enabled in the worker config
 ```
 
 Current admin script:
@@ -297,35 +297,31 @@ never replace a good name with the ticker symbol
 never replace a positive market cap with zero
 ```
 
-### Phase 6: SEC 13F Ownership
+### Phase 6: Ownership Coverage
 
-This is important for product value, but it is heavier than annual fundamentals.
+This is important for product value, but it is separate from annual fundamentals.
 
 Purpose:
 
 ```text
-precompute institutional ownership so users see it instantly
+precompute visible ownership so users see it instantly
 avoid calculating ownership during add ticker or list load
 ```
 
 Input:
 
 ```text
-latest available 13F-HR quarter
-all relevant institutional manager filings
-symbol-to-CUSIP mapping
-shares outstanding from a separate provider/cache source
+Yahoo major holders for the visible ownership field
+SEC 13F data for optional diagnostic and research comparison
 ```
 
 Actions:
 
 ```text
-download/parse 13F holdings in background
-filter holdings by CUSIP/ticker mapping
-sum institutional shares and reported value by symbol
-calculate estimated ownership percent when shares outstanding is available
-store holder count and top holders
-store report period and source filing dates
+fetch the Yahoo major-holders table
+extract the institutional ownership percent
+store the visible ownership value in the cache
+optionally keep SEC 13F data in the research path for comparison
 ```
 
 Current prototype:
@@ -339,19 +335,16 @@ python check_sec_13f_ownership.py MSFT
 Prototype behavior:
 
 ```text
-resolves ticker to CUSIP using the SEC company ticker list and current SEC 13F securities list
-downloads the latest SEC quarterly 13F data-set ZIP
-filters the flattened information table by CUSIP
-aggregates institutional shares, reported value, holder rows, and filing count
-estimates ownership percent when cached price and market cap can estimate shares outstanding
+reads the Yahoo major holders table through yfinance
+extracts the institutional ownership percentage used in the visible table
+falls back to the SEC research path only for diagnostics and comparison
 ```
 
 Production gap:
 
 ```text
-join/report manager names for top holders
-schedule quarterly refresh after SEC 13F data sets publish
-handle ambiguous ticker-to-CUSIP matches with a maintained mapping table
+decide whether to keep the SEC research path as an optional comparison tool
+add TTL-based refresh for ownership if we want periodic revalidation
 ```
 
 Current cache bootstrap script:
@@ -384,17 +377,16 @@ python bootstrap_ownership.py --recalculate-only --missing-only --limit 25
 Production rule:
 
 ```text
-only update stock_snapshots.inst_ownership when the SEC aggregate produces a positive estimate
+only update stock_snapshots.inst_ownership when the Yahoo major-holders source produces a positive value
 do not replace missing/failed ownership with 0.00%
-store missing ownership attempts in ownership_snapshots for audit/retry planning
-keep rows with SEC shares but missing price/market cap in shares_only status so they can be recalculated later
+keep the SEC research path separate so it cannot overwrite the visible ownership field
 ```
 
 UI rule:
 
 ```text
 show cached ownership instantly
-label it as SEC 13F and show report period
+label it as Yahoo major holders in the visible table
 if missing, show Ownership pending or Missing, never 0.00% unless confirmed true
 ```
 
@@ -420,7 +412,7 @@ When users are active:
 4. recent user watchlists
 5. active user hidden watchlists
 6. bootstrap universe fundamentals/history
-7. SEC 13F ownership background aggregation
+7. ownership refresh and verification
 8. unused universe maintenance
 ```
 
@@ -431,7 +423,7 @@ When no users are active:
 2. universe annual fundamentals
 3. universe history baselines
 4. profile/name/market cap cleanup
-5. SEC 13F ownership pipeline
+5. ownership refresh and verification
 6. low-priority unused universe refresh
 ```
 
@@ -470,9 +462,9 @@ Bootstrap is successful when:
 
 ```text
 popular symbols can be added from cache instantly
-annual revenue/profit is mostly prefilled from SEC
+annual revenue/profit is mostly prefilled from the configured primary provider
 history baselines exist before users request charts/analysis
-ownership is cached where the SEC 13F pipeline has completed
+ownership is cached where the visible ownership source has completed
 provider failures are logged without damaging existing good data
 the process can stop and resume without duplicate damage
 ```
