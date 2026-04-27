@@ -1133,6 +1133,51 @@ def fetch_chart_quote_api(
         return {}
 
 
+def fetch_latest_intraday_bar(
+    symbol: str,
+    interval_minutes: int,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> dict[str, Any]:
+    interval_minutes = max(1, int(interval_minutes or 1))
+    range_value = "1d" if interval_minutes <= 5 else "5d"
+    try:
+        limiter.wait("quote")
+        with logger.track(symbol, "quote", "yahoo_intraday_alert_api") as span:
+            response = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"range": range_value, "interval": f"{interval_minutes}m"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=12,
+            )
+            span.status_code = response.status_code
+            response.raise_for_status()
+        data = response.json()
+        result = data.get("chart", {}).get("result", [{}])[0]
+        timestamps = result.get("timestamp") or []
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
+        closes = quote.get("close") or []
+        for ts, high, low, close in reversed(list(zip(timestamps, highs, lows, closes))):
+            high_value = number_or_zero(high)
+            low_value = number_or_zero(low)
+            close_value = number_or_zero(close)
+            if not ts or high_value <= 0 or low_value <= 0:
+                continue
+            return {
+                "symbol": symbol,
+                "bar_time": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
+                "high": high_value,
+                "low": low_value,
+                "close": close_value if close_value > 0 else None,
+                "interval_minutes": interval_minutes,
+            }
+    except Exception:
+        return {}
+    return {}
+
+
 def safe_fast_info(stock: yf.Ticker) -> dict[str, Any]:
     try:
         fast_info = stock.fast_info

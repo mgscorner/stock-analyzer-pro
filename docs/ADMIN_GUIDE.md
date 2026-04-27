@@ -111,7 +111,7 @@ WORKER_OWNERSHIP_TTL_CLOSED_MINUTES=20160
 WORKER_QUOTE_MIN_INTERVAL_MS=300
 WORKER_HISTORY_MIN_INTERVAL_MS=500
 WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
-WORKER_SCHEDULER_INTERVAL_SECONDS=120
+WORKER_SCHEDULER_INTERVAL_SECONDS=60
 WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE=30
 WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE=15
 WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES=10
@@ -150,7 +150,7 @@ WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES=10
 | `WORKER_QUOTE_MIN_INTERVAL_MS` | optional | `300` | Minimum spacing for quote-layer calls when the limiter applies. |
 | `WORKER_HISTORY_MIN_INTERVAL_MS` | optional | `500` | Minimum spacing for history-layer calls when the limiter applies. |
 | `WORKER_FUNDAMENTALS_MIN_INTERVAL_MS` | optional | `30000` | Minimum spacing for fundamentals-layer attempts when the limiter applies. |
-| `WORKER_SCHEDULER_INTERVAL_SECONDS` | optional | `120` | Sleep between scheduler cycles. |
+| `WORKER_SCHEDULER_INTERVAL_SECONDS` | optional | `60` | Sleep between scheduler cycles. Use `60` if you want 1-minute alert evaluation. |
 | `WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE` | optional | `30` | Max watchlist symbols processed per scheduler cycle. |
 | `WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE` | optional | `15` | Max non-watchlist universe symbols processed per closed-market scheduler cycle. |
 | `WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES` | optional | `10` | Minutes before a watchlist heartbeat expires and the scheduler downgrades it from active priority. |
@@ -293,6 +293,27 @@ Current limitation:
 ```text
 the frontend heartbeat updates watchlist_activity only while the browser session is running
 if the browser closes unexpectedly, the scheduler waits for the active window to expire before downgrading that watchlist
+```
+
+## Alerts
+
+Before using persistent alerts and backend alert evaluation, run this SQL in Supabase:
+
+```text
+production_app/docs/alerts_schema_update.sql
+```
+
+Current alert behavior:
+
+```text
+alerts are stored in public.alerts
+the scheduler evaluates active alerts by unique symbol and interval_minutes
+the scheduler fetches intraday candle high/low once per symbol
+above alerts trigger when candle high touches/exceeds threshold
+below alerts trigger when candle low touches/falls below threshold
+triggered alerts auto-deactivate
+users must reactivate them manually
+trigger history is written to public.alert_events
 ```
 
 ## User Feedback

@@ -919,7 +919,7 @@ function Dashboard({ session }) {
           />
         )}
         {activeList && rows.length > 0 && (
-          <ChartPanel symbol={chartTicker} snapshot={snapshots[chartTicker]} userId={user.id} />
+          <ChartPanel symbol={chartTicker} snapshot={snapshots[chartTicker]} userId={user.id} activeList={activeList} />
         )}
         {feedbackOpen && (
           <div className="modal-backdrop" onClick={() => setFeedbackOpen(false)}>

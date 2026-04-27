@@ -1200,6 +1200,38 @@ Behavior idea:
 5. Do not rerun the screener repeatedly per user session.
 ```
 
+## Alert Notes
+
+Current alert direction:
+
+```text
+alerts are user-owned rows
+evaluation is shared backend work grouped by symbol
+one symbol candle fetch should evaluate all matching user alerts for that symbol
+triggered alerts auto-deactivate
+users reactivate alerts manually
+```
+
+Premium alert ideas to keep:
+
+```text
+free tier:
+    slower candle intervals such as 5 minute or 15 minute
+    lower alert-count cap
+
+pro tier:
+    1 minute candle high/low evaluation
+    higher alert-count cap
+```
+
+Important design rule:
+
+```text
+do not evaluate alerts per user session
+do not poll one symbol multiple times just because multiple users have alerts on it
+cost should scale with unique symbols per interval bucket, not raw alert count
+```
+
 Potential screen types:
 
 ```text

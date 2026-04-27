@@ -12,6 +12,7 @@ from app.main import (
     settings,
 )
 from app.market_debug import MarketRequestLogger
+from app.market_data import fetch_latest_intraday_bar
 from app.market_policy import FIELD_PRICE, MARKET_CLOSED_WEEKDAY, MARKET_CLOSED_WEEKEND, market_policy_now
 from app.rate_limit import MarketRequestLimiter
 from app.supabase_db import execute_with_retry
@@ -66,6 +67,8 @@ def run_cycle(watchlist_batch_size: int, universe_batch_size: int) -> None:
     active_hidden_due = due_symbols(buckets["active_hidden"], policy.mode, include_after_hours_prices=True)
     if active_hidden_due:
         process_symbols("active-hidden", active_hidden_due[:watchlist_batch_size])
+
+    process_alerts()
 
     if not buckets["has_active_sessions"]:
         inactive_due = due_symbols(buckets["inactive"], policy.mode, include_after_hours_prices=False)
@@ -194,6 +197,119 @@ def load_universe_symbols() -> list[str]:
         seen.add(symbol)
         symbols.append(symbol)
     return symbols
+
+
+def process_alerts() -> None:
+    alerts = load_due_alerts()
+    if not alerts:
+        return
+    logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=str(uuid4()))
+    limiter = MarketRequestLimiter(
+        enabled=settings.enable_request_limiter,
+        quote_min_interval_ms=settings.quote_min_interval_ms,
+        history_min_interval_ms=settings.history_min_interval_ms,
+        fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
+    )
+
+    grouped: dict[tuple[int, str], list[dict[str, object]]] = {}
+    for alert in alerts:
+        symbol = str(alert.get("symbol") or "").strip().upper()
+        interval = max(1, int(alert.get("interval_minutes") or 1))
+        if not symbol:
+            continue
+        grouped.setdefault((interval, symbol), []).append(alert)
+
+    triggered_rows: list[dict[str, object]] = []
+    update_rows: list[dict[str, object]] = []
+    processed = 0
+    for (interval, symbol), symbol_alerts in grouped.items():
+        bar = fetch_latest_intraday_bar(symbol, interval, logger, limiter)
+        if not bar:
+            continue
+        processed += 1
+        for alert in symbol_alerts:
+            update_rows.append(
+                {
+                    "id": alert["id"],
+                    "last_checked_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            )
+            if alert_triggered(alert, bar):
+                triggered_rows.append(
+                    {
+                        "alert_id": alert["id"],
+                        "user_id": alert["user_id"],
+                        "symbol": symbol,
+                        "trigger_price": alert.get("threshold"),
+                        "bar_time": bar["bar_time"],
+                    }
+                )
+                update_rows.append(
+                    {
+                        "id": alert["id"],
+                        "active": False,
+                        "last_checked_at": datetime.utcnow().isoformat(),
+                        "last_triggered_at": datetime.utcnow().isoformat(),
+                        "last_triggered_price": alert.get("threshold"),
+                        "last_triggered_bar_time": bar["bar_time"],
+                        "updated_at": datetime.utcnow().isoformat(),
+                    }
+                )
+
+    if triggered_rows:
+        execute_with_retry(lambda: service_client.table("alert_events").insert(triggered_rows).execute())
+    for row in dedupe_alert_updates(update_rows):
+        execute_with_retry(lambda row=row: service_client.table("alerts").update(row).eq("id", row["id"]).execute())
+    if logger.events:
+        insert_market_request_logs(service_client, logger.events)
+    if processed:
+        print(f"  alerts: checked_symbols={processed} triggered={len(triggered_rows)}")
+
+
+def load_due_alerts() -> list[dict[str, object]]:
+    result = execute_with_retry(
+        lambda: service_client.table("alerts")
+        .select("id,user_id,symbol,condition_type,threshold,interval_minutes,last_checked_at,active")
+        .eq("active", True)
+        .execute()
+    )
+    rows = result.data or []
+    due: list[dict[str, object]] = []
+    now = datetime.utcnow()
+    for row in rows:
+        last_checked = row.get("last_checked_at")
+        interval = max(1, int(row.get("interval_minutes") or 1))
+        if not last_checked:
+            due.append(row)
+            continue
+        try:
+            checked = datetime.fromisoformat(str(last_checked).replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            due.append(row)
+            continue
+        if now - checked >= timedelta(minutes=interval):
+            due.append(row)
+    return due
+
+
+def alert_triggered(alert: dict[str, object], bar: dict[str, object]) -> bool:
+    threshold = float(alert.get("threshold") or 0)
+    if threshold <= 0:
+        return False
+    condition = str(alert.get("condition_type") or "price_above").strip().lower()
+    high = float(bar.get("high") or 0)
+    low = float(bar.get("low") or 0)
+    if condition == "price_below":
+        return low > 0 and low <= threshold
+    return high > 0 and high >= threshold
+
+
+def dedupe_alert_updates(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    latest: dict[str, dict[str, object]] = {}
+    for row in rows:
+        latest[str(row["id"])] = row
+    return list(latest.values())
 
 
 if __name__ == "__main__":

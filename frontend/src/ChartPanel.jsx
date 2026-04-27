@@ -1,27 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createChart, CrosshairMode, LineStyle } from 'lightweight-charts';
-
-function alarmStorageKey(userId, symbol) {
-  return `stock-analyzer:chart-alarms:${userId}:${symbol}`;
-}
-
-function loadAlarms(userId, symbol) {
-  try {
-    const raw = window.localStorage.getItem(alarmStorageKey(userId, symbol));
-    const parsed = JSON.parse(raw || '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value) && value > 0)
-      .sort((a, b) => a - b);
-  } catch {
-    return [];
-  }
-}
-
-function saveAlarms(userId, symbol, alarms) {
-  window.localStorage.setItem(alarmStorageKey(userId, symbol), JSON.stringify(alarms));
-}
+import { createChart, CrosshairMode, LineStyle, AreaSeries } from 'lightweight-charts';
+import { supabase } from './supabaseClient';
 
 function toChartData(history) {
   return history
@@ -40,38 +19,53 @@ function displayPrice(value) {
   return `$${number.toFixed(2)}`;
 }
 
-export default function ChartPanel({ symbol, snapshot, userId }) {
+function sortAlerts(rows) {
+  return [...rows].sort((a, b) => {
+    if (Boolean(a.active) !== Boolean(b.active)) return a.active ? -1 : 1;
+    return Number(a.threshold || 0) - Number(b.threshold || 0);
+  });
+}
+
+export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
   const containerRef = useRef(null);
-  const chartRef = useRef(null);
   const seriesRef = useRef(null);
   const priceLinesRef = useRef([]);
-  const [alarms, setAlarms] = useState([]);
-  const [selectedAlarm, setSelectedAlarm] = useState(-1);
+  const [alerts, setAlerts] = useState([]);
+  const [selectedAlert, setSelectedAlert] = useState('');
 
   const history = Array.isArray(snapshot?.history_data) ? snapshot.history_data : [];
   const chartData = useMemo(() => toChartData(history), [history]);
   const currentPrice = Number(snapshot?.price || 0);
   const currentLabel = displayPrice(currentPrice);
   const lastClose = chartData.length ? chartData[chartData.length - 1].value : 0;
+  const activeAlerts = alerts.filter((alert) => alert.active);
 
   useEffect(() => {
-    if (!symbol) {
-      setAlarms([]);
-      setSelectedAlarm(-1);
+    if (!symbol || !userId) {
+      setAlerts([]);
+      setSelectedAlert('');
       return;
     }
-    const next = loadAlarms(userId, symbol);
-    setAlarms(next);
-    setSelectedAlarm(next.length ? 0 : -1);
-  }, [userId, symbol]);
+    loadAlerts();
+  }, [symbol, userId]);
 
-  useEffect(() => {
-    if (!symbol) return;
-    saveAlarms(userId, symbol, alarms);
-    if (selectedAlarm >= alarms.length) {
-      setSelectedAlarm(alarms.length ? alarms.length - 1 : -1);
+  async function loadAlerts() {
+    const { data, error } = await supabase
+      .from('alerts')
+      .select('id,symbol,condition_type,threshold,active,last_triggered_at,interval_minutes')
+      .eq('user_id', userId)
+      .eq('symbol', symbol)
+      .order('created_at');
+    if (error) {
+      console.warn('alert load failed', error.message);
+      return;
     }
-  }, [alarms, selectedAlarm, symbol, userId]);
+    const next = sortAlerts(data || []);
+    setAlerts(next);
+    if (!next.find((row) => row.id === selectedAlert)) {
+      setSelectedAlert(next[0]?.id || '');
+    }
+  }
 
   useEffect(() => {
     if (!containerRef.current || !chartData.length) return undefined;
@@ -99,7 +93,7 @@ export default function ChartPanel({ symbol, snapshot, userId }) {
       },
     });
 
-    const series = chart.addAreaSeries({
+    const series = chart.addSeries(AreaSeries, {
       lineColor: '#1d6f42',
       topColor: 'rgba(29, 111, 66, 0.24)',
       bottomColor: 'rgba(29, 111, 66, 0.03)',
@@ -109,32 +103,15 @@ export default function ChartPanel({ symbol, snapshot, userId }) {
     });
 
     series.setData(chartData);
-
-    if (currentPrice > 0) {
-      priceLinesRef.current.push(
-        series.createPriceLine({
-          price: currentPrice,
-          color: '#1d2430',
-          lineWidth: 1,
-          lineStyle: LineStyle.Dotted,
-          axisLabelVisible: true,
-          title: 'Current',
-        })
-      );
-    }
-
     chart.timeScale().fitContent();
-
-    chartRef.current = chart;
     seriesRef.current = series;
 
     return () => {
       priceLinesRef.current = [];
       seriesRef.current = null;
-      chartRef.current = null;
       chart.remove();
     };
-  }, [chartData, currentPrice]);
+  }, [chartData]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -159,19 +136,21 @@ export default function ChartPanel({ symbol, snapshot, userId }) {
       );
     }
 
-    alarms.forEach((alarmPrice, index) => {
+    activeAlerts.forEach((alert, index) => {
+      const threshold = Number(alert.threshold || 0);
+      if (!Number.isFinite(threshold) || threshold <= 0) return;
       priceLinesRef.current.push(
         series.createPriceLine({
-          price: alarmPrice,
-          color: index === selectedAlarm ? '#b42318' : '#f97316',
-          lineWidth: index === selectedAlarm ? 2 : 1,
+          price: threshold,
+          color: alert.id === selectedAlert ? '#b42318' : '#f97316',
+          lineWidth: alert.id === selectedAlert ? 2 : 1,
           lineStyle: LineStyle.Dashed,
           axisLabelVisible: true,
           title: `Alert ${index + 1}`,
         })
       );
     });
-  }, [alarms, selectedAlarm, currentPrice]);
+  }, [activeAlerts, selectedAlert, currentPrice]);
 
   if (!symbol) {
     return <div className="chart-panel muted">Select a row to show its cached chart.</div>;
@@ -181,33 +160,68 @@ export default function ChartPanel({ symbol, snapshot, userId }) {
     return <div className="chart-panel muted">{symbol}: no cached chart history yet.</div>;
   }
 
-  function addAlarm() {
+  async function addAlert() {
     const base = currentPrice > 0 ? currentPrice : lastClose;
     if (!base || !Number.isFinite(base)) return;
     const rounded = Number(base.toFixed(2));
-    setAlarms((current) => {
-      const next = [...current, rounded].sort((a, b) => a - b);
-      setSelectedAlarm(next.indexOf(rounded));
-      return next;
-    });
+    const payload = {
+      user_id: userId,
+      symbol,
+      watchlist_name: activeList || null,
+      condition_type: 'price_above',
+      threshold: rounded,
+      interval_minutes: 1,
+      active: true,
+    };
+    const { error } = await supabase.from('alerts').insert(payload);
+    if (error) {
+      console.warn('alert insert failed', error.message);
+      return;
+    }
+    await loadAlerts();
   }
 
-  function moveAlarm(direction) {
-    if (selectedAlarm < 0 || selectedAlarm >= alarms.length) return;
-    const current = alarms[selectedAlarm];
-    const step = Math.max(0.01, Number((current * 0.01).toFixed(2)));
-    const updated = Math.max(0.01, Number((current + step * direction).toFixed(2)));
-    setAlarms((existing) => {
-      const next = [...existing];
-      next[selectedAlarm] = updated;
-      return next.sort((a, b) => a - b);
-    });
+  async function moveAlert(direction) {
+    const current = alerts.find((alert) => alert.id === selectedAlert);
+    if (!current) return;
+    const base = Number(current.threshold || 0);
+    const step = Math.max(0.01, Number((base * 0.01).toFixed(2)));
+    const updated = Math.max(0.01, Number((base + step * direction).toFixed(2)));
+    const { error } = await supabase
+      .from('alerts')
+      .update({ threshold: updated, active: true, updated_at: new Date().toISOString() })
+      .eq('id', current.id);
+    if (error) {
+      console.warn('alert update failed', error.message);
+      return;
+    }
+    await loadAlerts();
   }
 
-  function removeAlarm() {
-    if (selectedAlarm < 0 || selectedAlarm >= alarms.length) return;
-    setAlarms((current) => current.filter((_value, index) => index !== selectedAlarm));
+  async function removeAlert() {
+    if (!selectedAlert) return;
+    const { error } = await supabase.from('alerts').delete().eq('id', selectedAlert);
+    if (error) {
+      console.warn('alert delete failed', error.message);
+      return;
+    }
+    await loadAlerts();
   }
+
+  async function reactivateAlert() {
+    if (!selectedAlert) return;
+    const { error } = await supabase
+      .from('alerts')
+      .update({ active: true, updated_at: new Date().toISOString() })
+      .eq('id', selectedAlert);
+    if (error) {
+      console.warn('alert reactivate failed', error.message);
+      return;
+    }
+    await loadAlerts();
+  }
+
+  const currentAlert = alerts.find((alert) => alert.id === selectedAlert);
 
   return (
     <section className="chart-panel">
@@ -219,18 +233,16 @@ export default function ChartPanel({ symbol, snapshot, userId }) {
         <span>Cached history with live table price line</span>
       </div>
       <div className="chart-toolbar">
-        <button className="ghost" onClick={addAlarm}>Add Alert</button>
-        <button className="ghost" disabled={selectedAlarm < 0} onClick={() => moveAlarm(1)}>Alert Up</button>
-        <button className="ghost" disabled={selectedAlarm < 0} onClick={() => moveAlarm(-1)}>Alert Down</button>
-        <button className="ghost danger" disabled={selectedAlarm < 0} onClick={removeAlarm}>Remove Alert</button>
-        <select
-          value={selectedAlarm >= 0 ? String(selectedAlarm) : ''}
-          onChange={(event) => setSelectedAlarm(event.target.value === '' ? -1 : Number(event.target.value))}
-        >
+        <button className="ghost" onClick={addAlert}>Add Alert</button>
+        <button className="ghost" disabled={!selectedAlert || !currentAlert?.active} onClick={() => moveAlert(1)}>Alert Up</button>
+        <button className="ghost" disabled={!selectedAlert || !currentAlert?.active} onClick={() => moveAlert(-1)}>Alert Down</button>
+        <button className="ghost" disabled={!selectedAlert || currentAlert?.active} onClick={reactivateAlert}>Reactivate</button>
+        <button className="ghost danger" disabled={!selectedAlert} onClick={removeAlert}>Remove Alert</button>
+        <select value={selectedAlert} onChange={(event) => setSelectedAlert(event.target.value)}>
           <option value="">Select alert</option>
-          {alarms.map((alarmPrice, index) => (
-            <option key={`${alarmPrice}-${index}`} value={String(index)}>
-              {`Alert ${index + 1} - ${displayPrice(alarmPrice)}`}
+          {alerts.map((alert, index) => (
+            <option key={alert.id} value={alert.id}>
+              {`Alert ${index + 1} - ${displayPrice(alert.threshold)} - ${alert.active ? 'Active' : 'Triggered'}`}
             </option>
           ))}
         </select>
