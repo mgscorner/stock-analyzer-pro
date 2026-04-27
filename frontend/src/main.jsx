@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { supabase, supabaseConfigured, workerApiUrl } from './supabaseClient';
+import ChartPanel from './ChartPanel';
 import {
   displayRow,
   mergeConfig,
@@ -918,7 +919,7 @@ function Dashboard({ session }) {
           />
         )}
         {activeList && rows.length > 0 && (
-          <ChartPanel symbol={chartTicker} snapshot={snapshots[chartTicker]} />
+          <ChartPanel symbol={chartTicker} snapshot={snapshots[chartTicker]} userId={user.id} />
         )}
         {feedbackOpen && (
           <div className="modal-backdrop" onClick={() => setFeedbackOpen(false)}>
@@ -1072,43 +1073,6 @@ function StockTable({ rows, columns: visibleColumns, sortConfig, setSortConfig, 
       </table>
     </div>
   );
-}
-
-function ChartPanel({ symbol, snapshot }) {
-  if (!symbol) {
-    return <div className="chart-panel muted">Select a row to show its cached chart.</div>;
-  }
-  const history = Array.isArray(snapshot?.history_data) ? snapshot.history_data : [];
-  const points = chartPoints(history.slice(-252));
-  if (!points) {
-    return <div className="chart-panel muted">{symbol}: no cached chart history yet.</div>;
-  }
-  return (
-    <section className="chart-panel">
-      <div className="chart-header">
-        <strong>{symbol}</strong>
-        <span>1Y cached close history</span>
-      </div>
-      <svg className="history-chart" viewBox="0 0 100 40" preserveAspectRatio="none" aria-label={`${symbol} chart`}>
-        <polyline points={points} fill="none" stroke="#1d6f42" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
-      </svg>
-    </section>
-  );
-}
-
-function chartPoints(history) {
-  const rows = history
-    .map((row) => Number(row.close || 0))
-    .filter((value) => value > 0);
-  if (rows.length < 2) return '';
-  const min = Math.min(...rows);
-  const max = Math.max(...rows);
-  const spread = max - min || 1;
-  return rows.map((value, index) => {
-    const x = (index / (rows.length - 1)) * 100;
-    const y = 38 - ((value - min) / spread) * 36;
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(' ');
 }
 
 function cellClass(key, value) {
