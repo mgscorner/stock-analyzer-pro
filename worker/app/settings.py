@@ -20,6 +20,24 @@ class Settings:
     debug_market_requests: bool
     enable_request_limiter: bool
     enable_quote_fast_lane: bool
+    enable_fundamentals_fallbacks: bool
+    fundamentals_provider_order: list[str]
+    market_main_open_hour: int
+    market_main_open_minute: int
+    market_main_close_hour: int
+    market_main_close_minute: int
+    market_pre_hours: int
+    market_post_hours: int
+    price_ttl_main_minutes: int
+    price_ttl_premarket_minutes: int
+    price_ttl_postmarket_minutes: int
+    price_ttl_closed_minutes: int
+    history_ttl_main_minutes: int
+    history_ttl_closed_minutes: int
+    fundamentals_ttl_main_minutes: int
+    fundamentals_ttl_closed_minutes: int
+    ownership_ttl_main_minutes: int
+    ownership_ttl_closed_minutes: int
     quote_min_interval_ms: int
     history_min_interval_ms: int
     fundamentals_min_interval_ms: int
@@ -37,10 +55,46 @@ def get_settings() -> Settings:
         debug_market_requests=os.getenv("WORKER_DEBUG_MARKET_REQUESTS", "0").strip() in {"1", "true", "True", "yes"},
         enable_request_limiter=os.getenv("WORKER_ENABLE_REQUEST_LIMITER", "1").strip() not in {"0", "false", "False", "no"},
         enable_quote_fast_lane=os.getenv("WORKER_ENABLE_QUOTE_FAST_LANE", "0").strip() in {"1", "true", "True", "yes"},
+        enable_fundamentals_fallbacks=os.getenv("WORKER_ENABLE_FUNDAMENTALS_FALLBACKS", "0").strip()
+        in {"1", "true", "True", "yes"},
+        fundamentals_provider_order=parse_csv_list(
+            os.getenv("WORKER_FUNDAMENTALS_PROVIDER_ORDER"),
+            ["yfinance", "sec", "finnhub_reported", "fmp"],
+        ),
+        market_main_open_hour=safe_int(os.getenv("WORKER_MARKET_MAIN_OPEN_HOUR"), 9),
+        market_main_open_minute=safe_int(os.getenv("WORKER_MARKET_MAIN_OPEN_MINUTE"), 30),
+        market_main_close_hour=safe_int(os.getenv("WORKER_MARKET_MAIN_CLOSE_HOUR"), 16),
+        market_main_close_minute=safe_int(os.getenv("WORKER_MARKET_MAIN_CLOSE_MINUTE"), 0),
+        market_pre_hours=safe_int(os.getenv("WORKER_MARKET_PRE_HOURS"), 4),
+        market_post_hours=safe_int(os.getenv("WORKER_MARKET_POST_HOURS"), 4),
+        price_ttl_main_minutes=safe_int(os.getenv("WORKER_PRICE_TTL_MAIN_MINUTES"), 5),
+        price_ttl_premarket_minutes=safe_int(os.getenv("WORKER_PRICE_TTL_PREMARKET_MINUTES"), 5),
+        price_ttl_postmarket_minutes=safe_int(os.getenv("WORKER_PRICE_TTL_POSTMARKET_MINUTES"), 5),
+        price_ttl_closed_minutes=safe_int(os.getenv("WORKER_PRICE_TTL_CLOSED_MINUTES"), 240),
+        history_ttl_main_minutes=safe_int(os.getenv("WORKER_HISTORY_TTL_MAIN_MINUTES"), 1440),
+        history_ttl_closed_minutes=safe_int(os.getenv("WORKER_HISTORY_TTL_CLOSED_MINUTES"), 10080),
+        fundamentals_ttl_main_minutes=safe_int(os.getenv("WORKER_FUNDAMENTALS_TTL_MAIN_MINUTES"), 1440),
+        fundamentals_ttl_closed_minutes=safe_int(os.getenv("WORKER_FUNDAMENTALS_TTL_CLOSED_MINUTES"), 4320),
+        ownership_ttl_main_minutes=safe_int(os.getenv("WORKER_OWNERSHIP_TTL_MAIN_MINUTES"), 10080),
+        ownership_ttl_closed_minutes=safe_int(os.getenv("WORKER_OWNERSHIP_TTL_CLOSED_MINUTES"), 20160),
         quote_min_interval_ms=safe_int(os.getenv("WORKER_QUOTE_MIN_INTERVAL_MS"), 300),
         history_min_interval_ms=safe_int(os.getenv("WORKER_HISTORY_MIN_INTERVAL_MS"), 500),
         fundamentals_min_interval_ms=safe_int(os.getenv("WORKER_FUNDAMENTALS_MIN_INTERVAL_MS"), 30000),
     )
+
+
+def parse_csv_list(value: str | None, default: list[str]) -> list[str]:
+    if not value:
+        return default
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in value.split(","):
+        item = raw.strip().lower()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+    return items or default
 
 
 def safe_int(value: str | None, default: int) -> int:

@@ -35,3 +35,4 @@ tmp/
 temp/
 worker/index_exports/
 worker/sec_cache/
+worker/local_test_scripts/
