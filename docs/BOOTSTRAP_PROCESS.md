@@ -163,6 +163,7 @@ Current full-row bootstrap:
 cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
 python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
 python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
+python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --refetch-after-minutes 15 --limit 25
 ```
 
 Execution model:
@@ -172,6 +173,7 @@ process symbols one at a time
 for each symbol, fetch quote/history/fundamentals in parallel
 merge once using the production-safe stock_snapshots merge
 recalculate cached SEC ownership percent after price and market cap exist
+refetch-after-minutes can be used to revisit only rows older than the chosen age window
 ```
 
 ### Phase 3: Annual Fundamentals

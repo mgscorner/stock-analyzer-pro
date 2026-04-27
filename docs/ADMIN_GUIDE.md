@@ -287,6 +287,12 @@ python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only -
 python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
 
+Run only symbols older than a specific age window:
+
+```powershell
+python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --refetch-after-minutes 15 --limit 25
+```
+
 Production-safe default behavior:
 
 ```text
@@ -295,6 +301,7 @@ quote/history/fundamentals run in parallel for that symbol
 shared provider limiter prevents same-layer bursts
 existing good DB values are protected by the normal safe merge
 ownership percent is recalculated only from already cached SEC shares
+refetch-after-minutes skips rows that are still fresh enough for the current run
 ```
 
 Useful controls:
@@ -302,6 +309,7 @@ Useful controls:
 ```powershell
 python bootstrap_full_cache.py --universe sp500 --limit 25 --quote-spacing-ms 300 --history-spacing-ms 750 --fundamentals-spacing-ms 750
 python bootstrap_full_cache.py --symbols AAPL --skip-ownership-recalc
+python bootstrap_full_cache.py --universe sp500 --missing-only --refetch-after-minutes 15 --limit 25
 ```
 
 ### SEC 13F Ownership Probe

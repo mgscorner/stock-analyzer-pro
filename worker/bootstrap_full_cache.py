@@ -4,6 +4,7 @@ import argparse
 import csv
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,8 +27,12 @@ def main() -> int:
     if args.universe:
         symbols.extend(load_universe_symbols(client, args.universe))
     symbols = dedupe_symbols(symbols)
-    if args.missing_only:
-        symbols = filter_incomplete_symbols(client, symbols)
+    if args.missing_only or args.refetch_after_minutes > 0:
+        symbols = filter_due_symbols(
+            client,
+            symbols,
+            refetch_after_minutes=args.refetch_after_minutes,
+        )
     if args.limit:
         symbols = symbols[: args.limit]
     if not symbols:
@@ -49,6 +54,8 @@ def main() -> int:
         print(f"limit: {args.limit}")
     if args.missing_only:
         print("missing_only: core_cache_fields")
+    if args.refetch_after_minutes > 0:
+        print(f"refetch_after_minutes: {args.refetch_after_minutes}")
     print(f"dry_run: {args.dry_run}")
     print(f"layer_workers: {args.layer_workers}")
     print(f"quote_spacing_ms: {args.quote_spacing_ms if not args.no_limiter else 0}")
@@ -188,6 +195,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--universe", nargs="*", default=[], help="Read symbols from stock_universes.")
     parser.add_argument("--limit", type=int, default=0, help="Limit symbols after de-duplication.")
     parser.add_argument("--missing-only", action="store_true", help="Skip stock_snapshots rows already complete.")
+    parser.add_argument(
+        "--refetch-after-minutes",
+        type=int,
+        default=0,
+        help="Only refetch rows whose core cache data is older than this many minutes. 0 disables the age check.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Fetch and print without writing to Supabase.")
     parser.add_argument("--no-limiter", action="store_true", help="Disable provider spacing for controlled local tests.")
     parser.add_argument("--debug-logs", action="store_true", help="Print provider request events.")
@@ -222,7 +235,7 @@ def load_universe_symbols(client, universes: Iterable[str]) -> list[str]:
     return [normalize_symbol(row.get("symbol")) for row in (result.data or []) if normalize_symbol(row.get("symbol"))]
 
 
-def filter_incomplete_symbols(client, symbols: list[str]) -> list[str]:
+def filter_due_symbols(client, symbols: list[str], refetch_after_minutes: int) -> list[str]:
     if not symbols:
         return []
     result = (
@@ -246,16 +259,18 @@ def filter_incomplete_symbols(client, symbols: list[str]) -> list[str]:
         if row is None:
             ranked.append((5, symbol))
             continue
-        missing_score = core_missing_score(row)
-        if missing_score > 0:
-            ranked.append((missing_score, symbol))
+        due_score = core_due_score(row, refetch_after_minutes)
+        if due_score > 0:
+            ranked.append((due_score, symbol))
     ranked.sort(key=lambda item: (-item[0], item[1]))
     return [symbol for _score, symbol in ranked]
 
 
-def core_missing_score(row: dict[str, Any]) -> int:
+def core_due_score(row: dict[str, Any], refetch_after_minutes: int) -> int:
     score = 0
     if row.get("quote_status") != "complete" or not positive_number(row.get("price")):
+        score += 1
+    elif refetch_after_minutes > 0 and is_older_than(row.get("price_updated_at"), refetch_after_minutes):
         score += 1
     if not positive_number(row.get("market_cap")):
         score += 1
@@ -263,6 +278,11 @@ def core_missing_score(row: dict[str, Any]) -> int:
         score += 1
     if row.get("fundamentals_status") != "complete" or not row.get("fundamentals_updated_at"):
         score += 1
+    if refetch_after_minutes > 0:
+        if is_older_than(row.get("history_updated_at"), refetch_after_minutes):
+            score += 1
+        if is_older_than(row.get("fundamentals_updated_at"), refetch_after_minutes):
+            score += 1
     return score
 
 
@@ -271,6 +291,32 @@ def positive_number(value: Any) -> bool:
         return float(value or 0) > 0
     except Exception:
         return False
+
+
+def is_older_than(value: Any, minutes: int) -> bool:
+    if minutes <= 0:
+        return False
+    dt = parse_datetime(value)
+    if not dt:
+        return True
+    return datetime.now(timezone.utc) - dt >= time_delta_minutes(minutes)
+
+
+def parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def time_delta_minutes(minutes: int):
+    return timedelta(minutes=minutes)
 
 
 def load_symbols(cli_symbols: Iterable[str], file_path: Path | None) -> list[str]:
