@@ -41,35 +41,28 @@ export function displayRow(symbol, comment, snapshot = {}) {
   const hasUsablePrice = Number(snapshot.price || 0) > 0;
   const hasHistory = snapshot.history_status === 'complete'
     || (Array.isArray(snapshot.history_data) && snapshot.history_data.length > 0);
-  const hasFundamentals = snapshot.fundamentals_status === 'complete'
-    || (
-      !snapshot.fundamentals_status
-      && Boolean(snapshot.fundamentals_updated_at)
-      && hasRealFundamentals(snapshot)
-    );
+  const hasFundamentalsData = hasRealFundamentals(snapshot);
   const fundamentalsMissing = snapshot.fundamentals_status === 'error'
     || snapshot.fundamentals_status === 'missing';
-  const fundamentalsDisplay = hasFundamentals
-    ? null
-    : fundamentalsMissing
-      ? 'Missing'
+  const fundamentalsDisplay = fundamentalsMissing
+    ? 'Missing'
+    : hasFundamentalsData
+      ? 'N/A'
       : 'Updating...';
   const dataStatus = snapshot.last_error
     ? 'Update Failed'
-    : hasSnapshot && hasUsablePrice && hasHistory && hasFundamentals
+    : hasSnapshot && hasUsablePrice && hasHistory && hasFundamentalsData
       ? 'OK'
-      : hasSnapshot && hasUsablePrice
-        ? fundamentalsMissing
-          ? 'Missing Fundamentals'
-          : 'Updating'
+    : hasSnapshot && hasUsablePrice
+        ? 'Partial'
         : 'Needs Cache';
 
   return {
     ticker: symbol,
     name: snapshot.name || symbol,
     price: money(snapshot.price, 2),
-    revenueStatus: hasFundamentals ? snapshot.revenue_status || 'N/A' : fundamentalsDisplay,
-    profitStatus: hasFundamentals ? snapshot.profit_status || 'N/A' : fundamentalsDisplay,
+    revenueStatus: derivedStatus(snapshot, 'revenue') || fundamentalsDisplay,
+    profitStatus: derivedStatus(snapshot, 'profit') || fundamentalsDisplay,
     ownership: ownershipDisplay(snapshot.inst_ownership),
     greenCharts: snapshot.green_charts || 'No',
     perf5y: hasHistory ? percent(performanceValue(snapshot, 'perf_5y', 'close_5y', 1260)) : 'N/A',
@@ -78,16 +71,14 @@ export function displayRow(symbol, comment, snapshot = {}) {
     perf6m: hasHistory ? percent(performanceValue(snapshot, 'perf_6m', 'close_6m', 126)) : 'N/A',
     perf3m: hasHistory ? percent(performanceValue(snapshot, 'perf_3m', 'close_3m', 63)) : 'N/A',
     perf1m: hasHistory ? percent(performanceValue(snapshot, 'perf_1m', 'close_1m', 21)) : 'N/A',
-    revenueYear1: hasFundamentals ? annualValue(snapshot, 'revenue', targetAnnualYears()[0]) : fundamentalsDisplay,
-    revenueYear2: hasFundamentals ? annualValue(snapshot, 'revenue', targetAnnualYears()[1]) : fundamentalsDisplay,
-    revenueYear3: hasFundamentals ? annualValue(snapshot, 'revenue', targetAnnualYears()[2]) : fundamentalsDisplay,
-    revenueYear4: hasFundamentals ? annualValue(snapshot, 'revenue', targetAnnualYears()[3]) : fundamentalsDisplay,
-    revenueYear5: hasFundamentals ? annualValue(snapshot, 'revenue', targetAnnualYears()[4]) : fundamentalsDisplay,
-    profitYear1: hasFundamentals ? annualValue(snapshot, 'profit', targetAnnualYears()[0]) : fundamentalsDisplay,
-    profitYear2: hasFundamentals ? annualValue(snapshot, 'profit', targetAnnualYears()[1]) : fundamentalsDisplay,
-    profitYear3: hasFundamentals ? annualValue(snapshot, 'profit', targetAnnualYears()[2]) : fundamentalsDisplay,
-    profitYear4: hasFundamentals ? annualValue(snapshot, 'profit', targetAnnualYears()[3]) : fundamentalsDisplay,
-    profitYear5: hasFundamentals ? annualValue(snapshot, 'profit', targetAnnualYears()[4]) : fundamentalsDisplay,
+    revenueYear1: annualValue(snapshot, 'revenue', targetAnnualYears(4)[0]),
+    revenueYear2: annualValue(snapshot, 'revenue', targetAnnualYears(4)[1]),
+    revenueYear3: annualValue(snapshot, 'revenue', targetAnnualYears(4)[2]),
+    revenueYear4: annualValue(snapshot, 'revenue', targetAnnualYears(4)[3]),
+    profitYear1: annualValue(snapshot, 'profit', targetAnnualYears(4)[0]),
+    profitYear2: annualValue(snapshot, 'profit', targetAnnualYears(4)[1]),
+    profitYear3: annualValue(snapshot, 'profit', targetAnnualYears(4)[2]),
+    profitYear4: annualValue(snapshot, 'profit', targetAnnualYears(4)[3]),
     marketCap: money(snapshot.market_cap, 0),
     dataStatus,
     comment: comment || '',
@@ -95,12 +86,27 @@ export function displayRow(symbol, comment, snapshot = {}) {
 }
 
 function hasRealFundamentals(snapshot) {
-  const ownership = Number(snapshot.inst_ownership || 0);
-  return ownership > 0
-    || snapshot.revenue_status === 'Growth'
+  return snapshot.revenue_status === 'Growth'
     || snapshot.profit_status === 'Growth'
     || Boolean(snapshot.revenue_year_1_value)
-    || Boolean(snapshot.profit_year_1_value);
+    || Boolean(snapshot.profit_year_1_value)
+    || hasAnyAnnualSeries(snapshot, 'revenue')
+    || hasAnyAnnualSeries(snapshot, 'profit');
+}
+
+function derivedStatus(snapshot, prefix) {
+  const stored = snapshot[`${prefix}_status`];
+  if (stored) return stored;
+  const values = [];
+  for (let index = 1; index <= 4; index += 1) {
+    const value = snapshot[`${prefix}_year_${index}_value`];
+    if (value === null || value === undefined || value === '') return null;
+    values.push(Number(value));
+  }
+  if (values.length < 4 || values.some((value) => Number.isNaN(value))) return null;
+  return values[0] > values[1] && values[1] > values[2] && values[2] > values[3]
+    ? 'Growth'
+    : 'Nope';
 }
 
 function ownershipDisplay(value) {
@@ -114,7 +120,7 @@ function compactMoney(value) {
   return money(Number(value) / 1000, 0);
 }
 
-export function targetAnnualYears(count = 5) {
+export function targetAnnualYears(count = 4) {
   const latestTargetYear = new Date().getFullYear() - 1;
   return Array.from({ length: count }, (_, index) => latestTargetYear - index);
 }
@@ -125,7 +131,21 @@ function annualValue(snapshot, prefix, targetYear) {
       return compactMoney(snapshot[`${prefix}_year_${index}_value`]);
     }
   }
-  return targetYear === targetAnnualYears()[0] ? 'Not published yet' : 'N/A';
+  return targetYear === targetAnnualYears(4)[0] && hasAnyAnnualSeries(snapshot, prefix)
+    ? 'Not published yet'
+    : 'N/A';
+}
+
+function hasAnyAnnualSeries(snapshot, prefix) {
+  for (let index = 1; index <= 5; index += 1) {
+    if (snapshot[`${prefix}_year_${index}_label`] !== null
+      && snapshot[`${prefix}_year_${index}_label`] !== undefined
+      && snapshot[`${prefix}_year_${index}_value`] !== null
+      && snapshot[`${prefix}_year_${index}_value`] !== undefined) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function performanceValue(snapshot, perfKey, baselineKey, tradingDaysBack) {

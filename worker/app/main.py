@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
@@ -9,7 +10,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .market_debug import MarketRequestLogger
-from .market_data import batch_quote_snapshots, fetch_snapshot, normalize_symbol
+from .market_data import (
+    batch_quote_snapshots,
+    fetch_snapshot,
+    fetch_yfinance_fundamentals,
+    normalize_symbol,
+)
+from .market_policy import (
+    FIELD_FUNDAMENTALS,
+    FIELD_HISTORY,
+    FIELD_OWNERSHIP,
+    FIELD_PRICE,
+    field_is_stale,
+    market_policy_now,
+    ttl_minutes,
+)
 from .rate_limit import MarketRequestLimiter
 from .settings import get_settings
 from .supabase_db import (
@@ -39,7 +54,6 @@ app.add_middleware(
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9.-]{1,12}$")
 MAX_SYMBOLS_PER_JOB = 30
-VISIBLE_PRICE_TTL_MINUTES = 15
 
 
 class RefreshRequest(BaseModel):
@@ -87,7 +101,12 @@ def refresh(
 
     if request.mode in {"smart_visible", "visible_smart"}:
         plan = smart_visible_plan(symbols)
-        due_symbols = plan["missing_symbols"] + plan["stale_quote_symbols"]
+        due_symbols = unique_symbols(
+            plan["quote_only_symbols"]
+            + plan["history_symbols"]
+            + plan["fundamentals_symbols"]
+            + plan["combined_symbols"]
+        )
         if not due_symbols:
             job = create_refresh_job(
                 service_client,
@@ -181,22 +200,33 @@ def clean_layers(raw_layers: list[str], mode: str) -> list[str]:
 
 
 def smart_visible_plan(symbols: list[str]) -> dict[str, list[str]]:
-    missing_symbols: list[str] = []
-    stale_quote_symbols: list[str] = []
+    market_policy = market_policy_now(settings)
+    quote_only_symbols: list[str] = []
+    history_symbols: list[str] = []
+    fundamentals_symbols: list[str] = []
+    combined_symbols: list[str] = []
     current_symbols: list[str] = []
 
     for symbol in symbols:
         snapshot = get_snapshot(service_client, symbol) or {}
-        if not has_positive_price(snapshot):
-            missing_symbols.append(symbol)
-        elif is_price_stale(snapshot):
-            stale_quote_symbols.append(symbol)
-        else:
+        layers = due_layers_for_visible(snapshot, market_policy.mode, market_policy.now)
+        if not layers:
             current_symbols.append(symbol)
+            continue
+        if layers == [FIELD_PRICE]:
+            quote_only_symbols.append(symbol)
+        elif layers == [FIELD_HISTORY]:
+            history_symbols.append(symbol)
+        elif layers == [FIELD_FUNDAMENTALS]:
+            fundamentals_symbols.append(symbol)
+        else:
+            combined_symbols.append(symbol)
 
     return {
-        "missing_symbols": missing_symbols,
-        "stale_quote_symbols": stale_quote_symbols,
+        "quote_only_symbols": quote_only_symbols,
+        "history_symbols": history_symbols,
+        "fundamentals_symbols": fundamentals_symbols,
+        "combined_symbols": combined_symbols,
         "current_symbols": current_symbols,
     }
 
@@ -208,13 +238,80 @@ def has_positive_price(snapshot: dict[str, Any]) -> bool:
         return False
 
 
-def is_price_stale(snapshot: dict[str, Any], ttl_minutes: int = VISIBLE_PRICE_TTL_MINUTES) -> bool:
-    if not has_positive_price(snapshot):
+def has_positive_ownership(snapshot: dict[str, Any]) -> bool:
+    try:
+        return float(snapshot.get("inst_ownership") or 0) > 0
+    except Exception:
+        return False
+
+
+def unique_symbols(symbols: list[str]) -> list[str]:
+    return list(dict.fromkeys(symbols))
+
+
+def due_layers_for_visible(snapshot: dict[str, Any], mode: str, now: datetime) -> list[str]:
+    layers: list[str] = []
+
+    if is_layer_due(snapshot, FIELD_PRICE, mode, now):
+        layers.append(FIELD_PRICE)
+    if is_layer_due(snapshot, FIELD_HISTORY, mode, now):
+        layers.append(FIELD_HISTORY)
+    if is_layer_due(snapshot, FIELD_FUNDAMENTALS, mode, now):
+        layers.append(FIELD_FUNDAMENTALS)
+    if is_layer_due(snapshot, FIELD_OWNERSHIP, mode, now):
+        if FIELD_FUNDAMENTALS not in layers:
+            layers.append(FIELD_FUNDAMENTALS)
+    return layers
+
+
+def is_layer_due(snapshot: dict[str, Any], field: str, mode: str, now: datetime) -> bool:
+    if field == FIELD_PRICE:
+        if not has_positive_price(snapshot):
+            return True
+        ttl = ttl_minutes(settings, FIELD_PRICE, mode)
+        return field_is_stale(parse_datetime(snapshot.get("price_updated_at")), ttl, now)
+    if field == FIELD_HISTORY:
+        ttl = ttl_minutes(settings, FIELD_HISTORY, mode)
+        return field_is_stale(parse_datetime(snapshot.get("history_updated_at")), ttl, now)
+    if field == FIELD_FUNDAMENTALS:
+        ttl = ttl_minutes(settings, FIELD_FUNDAMENTALS, mode)
+        return field_is_stale(parse_datetime(snapshot.get("fundamentals_updated_at")), ttl, now) or annual_fundamentals_missing(snapshot)
+    if field == FIELD_OWNERSHIP:
+        ttl = ttl_minutes(settings, FIELD_OWNERSHIP, mode)
+        return field_is_stale(parse_datetime(snapshot.get("fundamentals_updated_at")), ttl, now) or not has_positive_ownership(snapshot)
+    return False
+
+
+def annual_fundamentals_missing(snapshot: dict[str, Any]) -> bool:
+    market_years = [market_policy_now(settings).now.year - offset for offset in range(1, 5)]
+    for target_year in market_years:
+        if not annual_series_has_year(snapshot, "revenue", target_year):
+            return True
+        if not annual_series_has_year(snapshot, "profit", target_year):
+            return True
+    return False
+
+
+def is_positive_number(value: Any) -> bool:
+    try:
+        return float(value or 0) > 0
+    except Exception:
+        return False
+
+
+def annual_series_has_year(snapshot: dict[str, Any], prefix: str, target_year: int) -> bool:
+    for idx in range(1, 6):
+        label = snapshot.get(f"{prefix}_year_{idx}_label")
+        value = snapshot.get(f"{prefix}_year_{idx}_value")
+        if label is None or value is None:
+            continue
+        try:
+            if int(label) != int(target_year):
+                continue
+        except Exception:
+            continue
         return True
-    updated_at = parse_datetime(snapshot.get("price_updated_at"))
-    if not updated_at:
-        return True
-    return datetime.now(timezone.utc) - updated_at >= timedelta(minutes=ttl_minutes)
+    return False
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -249,8 +346,13 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
-            core_snapshot = fetch_snapshot(symbol, layers=["quote", "history"], logger=logger, limiter=limiter)
-            upsert_snapshot(service_client, core_snapshot)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                core_future = executor.submit(fetch_snapshot, symbol, ["quote", "history"], logger, limiter)
+                fundamentals_future = executor.submit(fetch_snapshot, symbol, ["fundamentals"], logger, limiter)
+                core_snapshot = core_future.result()
+                fundamentals_snapshot = fundamentals_future.result()
+            merged_snapshot = merge_snapshot(core_snapshot, fundamentals_snapshot)
+            upsert_snapshot(service_client, merged_snapshot)
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
@@ -258,18 +360,6 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
                 mark_symbol_failed(service_client, symbol, message)
             except Exception as mark_exc:
                 failures.append(f"{symbol}: could not record failure: {mark_exc}")
-
-        if not failures:
-            try:
-                fundamentals_snapshot = fetch_snapshot(
-                    symbol,
-                    layers=["fundamentals"],
-                    logger=logger,
-                    limiter=limiter,
-                )
-                upsert_snapshot(service_client, fundamentals_snapshot)
-            except Exception as exc:
-                failures.append(f"{symbol} fundamentals: {exc}")
     elif layers == ["quote"] and len(symbols) > 1:
         try:
             existing = {symbol: get_snapshot(service_client, symbol) or {} for symbol in symbols}
@@ -323,21 +413,32 @@ def refresh_smart_visible_symbols(
     limiter: MarketRequestLimiter,
     failures: list[str],
 ) -> None:
-    initial_symbols: list[str] = []
-    quote_symbols: list[str] = []
+    quote_only_symbols: list[str] = []
+    history_symbols: dict[str, list[str]] = {}
+    fundamentals_symbols: dict[str, list[str]] = {}
+    combined_symbols: dict[str, list[str]] = {}
+
+    market_policy = market_policy_now(settings)
 
     for symbol in symbols:
         snapshot = get_snapshot(service_client, symbol) or {}
-        if not has_positive_price(snapshot):
-            initial_symbols.append(symbol)
-        elif is_price_stale(snapshot):
-            quote_symbols.append(symbol)
+        layers = due_layers_for_visible(snapshot, market_policy.mode, market_policy.now)
+        if not layers:
+            continue
+        if layers == [FIELD_PRICE]:
+            quote_only_symbols.append(symbol)
+        elif layers == [FIELD_HISTORY]:
+            history_symbols[symbol] = layers
+        elif layers == [FIELD_FUNDAMENTALS]:
+            fundamentals_symbols[symbol] = layers
+        else:
+            combined_symbols[symbol] = layers
 
-    if quote_symbols:
+    if quote_only_symbols:
         try:
-            existing = {symbol: get_snapshot(service_client, symbol) or {} for symbol in quote_symbols}
+            existing = {symbol: get_snapshot(service_client, symbol) or {} for symbol in quote_only_symbols}
             for snapshot in batch_quote_snapshots(
-                quote_symbols,
+                quote_only_symbols,
                 existing,
                 logger,
                 limiter,
@@ -350,10 +451,10 @@ def refresh_smart_visible_symbols(
         except Exception as exc:
             failures.append(f"batch quote: {exc}")
 
-    for symbol in initial_symbols:
+    for symbol, layers in history_symbols.items():
         try:
-            core_snapshot = fetch_snapshot(symbol, layers=["quote", "history"], logger=logger, limiter=limiter)
-            upsert_snapshot(service_client, core_snapshot)
+            snapshot = fetch_snapshot(symbol, layers=layers, logger=logger, limiter=limiter)
+            upsert_snapshot(service_client, snapshot)
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
@@ -361,15 +462,74 @@ def refresh_smart_visible_symbols(
                 mark_symbol_failed(service_client, symbol, message)
             except Exception as mark_exc:
                 failures.append(f"{symbol}: could not record failure: {mark_exc}")
-            continue
 
+    for symbol, layers in fundamentals_symbols.items():
         try:
-            fundamentals_snapshot = fetch_snapshot(
-                symbol,
-                layers=["fundamentals"],
-                logger=logger,
-                limiter=limiter,
-            )
-            upsert_snapshot(service_client, fundamentals_snapshot)
+            refresh_visible_missing_fundamentals(symbol, logger, failures)
         except Exception as exc:
-            failures.append(f"{symbol} fundamentals: {exc}")
+            message = str(exc)
+            failures.append(f"{symbol}: {message}")
+            try:
+                mark_symbol_failed(service_client, symbol, message)
+            except Exception as mark_exc:
+                failures.append(f"{symbol}: could not record failure: {mark_exc}")
+
+    for symbol, layers in combined_symbols.items():
+        non_fund_layers = [layer for layer in layers if layer != FIELD_FUNDAMENTALS]
+        try:
+            if non_fund_layers:
+                snapshot = fetch_snapshot(symbol, layers=non_fund_layers, logger=logger, limiter=limiter)
+                upsert_snapshot(service_client, snapshot)
+            refresh_visible_missing_fundamentals(symbol, logger, failures)
+        except Exception as exc:
+            message = str(exc)
+            failures.append(f"{symbol}: {message}")
+            try:
+                mark_symbol_failed(service_client, symbol, message)
+            except Exception as mark_exc:
+                failures.append(f"{symbol}: could not record failure: {mark_exc}")
+
+
+def refresh_visible_missing_fundamentals(
+    symbol: str,
+    logger: MarketRequestLogger,
+    failures: list[str],
+) -> None:
+    existing = get_snapshot(service_client, symbol) or {"symbol": symbol}
+    fundamentals = fetch_yfinance_fundamentals(symbol, logger)
+    annual_fields = fundamentals.get("annual_fields") or {}
+    if not annual_fields:
+        raise ValueError("No annual fundamentals returned by yfinance")
+
+    payload: dict[str, Any] = {
+        "symbol": symbol,
+        "fundamentals_status": "complete",
+        "fundamentals_updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    name = fundamentals.get("name")
+    if name and normalize_symbol(name) != symbol:
+        payload["name"] = name
+    market_cap = fundamentals.get("market_cap")
+    if market_cap:
+        payload["market_cap"] = market_cap
+    inst_ownership = fundamentals.get("inst_ownership")
+    if inst_ownership:
+        payload["inst_ownership"] = inst_ownership
+
+    for key, value in annual_fields.items():
+        if value is None:
+            continue
+        payload[key] = value
+
+    merged = merge_visible_fundamentals(existing, payload)
+    upsert_snapshot(service_client, merged)
+
+
+def merge_visible_fundamentals(existing: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    merged = {**existing}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        merged[key] = value
+    return merged

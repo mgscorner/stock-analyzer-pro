@@ -231,16 +231,13 @@ def fundamentals_complete(snapshot: dict[str, Any]) -> bool:
 
 
 def has_real_fundamentals(snapshot: dict[str, Any]) -> bool:
-    try:
-        ownership = float(snapshot.get("inst_ownership") or 0)
-    except Exception:
-        ownership = 0
     return (
-        ownership > 0
-        or snapshot.get("revenue_status") == "Growth"
+        snapshot.get("revenue_status") == "Growth"
         or snapshot.get("profit_status") == "Growth"
         or bool(snapshot.get("revenue_year_1_value"))
         or bool(snapshot.get("profit_year_1_value"))
+        or bool(snapshot.get("revenue_year_2_value"))
+        or bool(snapshot.get("profit_year_2_value"))
     )
 
 

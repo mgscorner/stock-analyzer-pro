@@ -54,6 +54,10 @@ def normalize_symbol(value: str) -> str:
     return str(value or "").strip().upper()
 
 
+def normalize_text(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
 def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -149,6 +153,9 @@ def fetch_snapshot(
         try:
             fundamentals = download_fundamentals(symbol, logger, limiter)
             fundamental_fields = extract_fundamental_fields(fundamentals["financials"])
+            annual_fields = fundamentals.get("annual_fields") or {}
+            if annual_fields:
+                fundamental_fields.update(annual_fields)
             fundamentals_name = fundamentals.get("name")
             snapshot.update(
                 {
@@ -315,39 +322,75 @@ def download_history(symbol: str, logger: MarketRequestLogger, limiter: MarketRe
 
 def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: MarketRequestLimiter) -> dict[str, Any]:
     cached = cache_get(_fundamentals_cache, symbol, FUNDAMENTALS_CACHE_TTL_SECONDS)
-    if cached:
+    if cached and fundamentals_cache_is_complete(cached):
         return cached
 
-    limiter.wait("fundamentals")
-    result = fetch_sec_fundamentals(symbol, logger, limiter)
-    if result:
-        cache_set(_fundamentals_cache, symbol, result)
-        return result
+    provider_order = fundamentals_provider_order()
+    if not fundamentals_fallbacks_enabled():
+        provider_order = provider_order[:1]
+    if not provider_order:
+        provider_order = ["yfinance"]
 
-    result = fetch_finnhub_reported_fundamentals(symbol, logger, limiter)
-    if result:
-        ownership = fetch_finnhub_ownership_metric(symbol, logger, limiter)
-        if ownership <= 0:
-            profile = fetch_fmp_profile_fields(symbol, logger, limiter)
-            ownership = profile.get("inst_ownership") or 0
-            result["name"] = profile.get("name") or result.get("name") or ""
-            result["market_cap"] = profile.get("market_cap") or result.get("market_cap") or 0
-        result["inst_ownership"] = ownership or result.get("inst_ownership") or 0
-        cache_set(_fundamentals_cache, symbol, result)
-        return result
+    result: dict[str, Any] = {
+        "name": symbol,
+        "market_cap": 0,
+        "inst_ownership": 0,
+        "financials": pd.DataFrame(),
+    }
+    saw_provider = False
+    for provider in provider_order:
+        limiter.wait("fundamentals")
+        partial = fetch_fundamentals_provider(provider, symbol, logger, limiter)
+        if not partial:
+            continue
+        saw_provider = True
+        result = merge_fundamentals_payload(result, partial)
+        if not fundamentals_fallbacks_enabled():
+            break
 
-    result = fetch_fmp_fundamentals(symbol, logger, limiter)
-    if result:
-        cache_set(_fundamentals_cache, symbol, result)
-        return result
+    if not saw_provider:
+        raise ValueError("Configured fundamentals providers unavailable")
 
-    if provider_key("FMP_API_KEY") or provider_key("FINNHUB_API_KEY"):
-        raise ValueError("Provider fundamentals unavailable")
+    if not isinstance(result.get("financials"), pd.DataFrame):
+        result["financials"] = pd.DataFrame()
+    cache_set(_fundamentals_cache, symbol, result)
+    return result
 
-    ensure_quote_summary_allowed()
+
+def fundamentals_cache_is_complete(snapshot: dict[str, Any]) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    return fundamentals_has_full_annual_series(snapshot)
+
+
+def fetch_fundamentals_provider(
+    provider: str,
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> dict[str, Any]:
+    provider = normalize_text(provider).lower()
+    if provider in {"yfinance", "yahoo", "yahoo_finance"}:
+        return fetch_yfinance_fundamentals(symbol, logger)
+    if provider in {"sec", "sec_companyfacts", "sec_company_facts"}:
+        return fetch_sec_fundamentals(symbol, logger, limiter)
+    if provider in {"finnhub", "finnhub_reported", "finnhub_financials"}:
+        return fetch_finnhub_reported_fundamentals(symbol, logger, limiter)
+    if provider in {"fmp", "fmp_income_statement", "fmp_profile"}:
+        return fetch_fmp_fundamentals(symbol, logger, limiter)
+    return {}
+
+
+def fetch_yfinance_fundamentals(symbol: str, logger: MarketRequestLogger) -> dict[str, Any]:
+    symbol = normalize_symbol(symbol)
     stock = yf.Ticker(symbol)
-    with logger.track(symbol, "fundamentals", "yfinance_info"):
-        info = safe_stock_info(stock)
+    info: dict[str, Any] = {}
+    try:
+        with logger.track(symbol, "fundamentals", "yfinance_info"):
+            info = safe_stock_info(stock)
+    except Exception:
+        info = {}
+
     try:
         with logger.track(symbol, "fundamentals", "yfinance_financials"):
             financials = stock.financials
@@ -356,14 +399,47 @@ def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: Mar
     if financials is None or not isinstance(financials, pd.DataFrame):
         financials = pd.DataFrame()
 
-    result = {
+    ownership = fetch_yfinance_major_holder_ownership(symbol, logger)
+    if not info and financials.empty and ownership <= 0:
+        return {}
+
+    return {
         "name": info.get("longName") or info.get("shortName") or symbol,
         "market_cap": number_or_zero(info.get("marketCap")),
-        "inst_ownership": normalize_ownership_percent(info.get("heldPercentInstitutions")),
+        "inst_ownership": ownership,
         "financials": financials,
+        "annual_fields": extract_direct_yfinance_annual_fields(financials),
     }
-    cache_set(_fundamentals_cache, symbol, result)
-    return result
+
+
+def merge_fundamentals_payload(target: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    merged = {**target}
+    copy_if_meaningful(merged, source, "name")
+    copy_if_positive(merged, source, "market_cap")
+    copy_if_positive(merged, source, "inst_ownership")
+    if isinstance(source.get("annual_fields"), dict) and source["annual_fields"]:
+        merged["annual_fields"] = {**(merged.get("annual_fields") or {}), **source["annual_fields"]}
+    if isinstance(source.get("financials"), pd.DataFrame) and not source["financials"].empty:
+        if not isinstance(merged.get("financials"), pd.DataFrame) or merged["financials"].empty:
+            merged["financials"] = source["financials"]
+    return merged
+
+
+def fundamentals_fallbacks_enabled() -> bool:
+    return os.getenv("WORKER_ENABLE_FUNDAMENTALS_FALLBACKS", "0").strip() in {"1", "true", "True", "yes"}
+
+
+def fundamentals_provider_order() -> list[str]:
+    raw = os.getenv("WORKER_FUNDAMENTALS_PROVIDER_ORDER", "yfinance,sec,finnhub_reported,fmp")
+    order: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        provider = normalize_text(item).lower()
+        if not provider or provider in seen:
+            continue
+        seen.add(provider)
+        order.append(provider)
+    return order or ["yfinance"]
 
 
 def cache_get(cache: dict[str, tuple[float, Any]], key: str, ttl_seconds: int) -> Any:
@@ -396,6 +472,38 @@ def safe_stock_info(stock: yf.Ticker) -> dict[str, Any]:
         if "Too Many Requests" in message or "Expecting value" in message:
             _quote_summary_blocked_until = time.time() + QUOTE_SUMMARY_BACKOFF_SECONDS
         raise
+
+
+def fetch_yfinance_major_holder_ownership(symbol: str, logger: MarketRequestLogger) -> float:
+    symbol = normalize_symbol(symbol)
+    try:
+        stock = yf.Ticker(symbol)
+        with logger.track(symbol, "fundamentals", "yfinance_major_holders"):
+            major_holders = stock.major_holders
+        if major_holders is None or major_holders.empty:
+            return 0
+
+        rows = []
+        for label, row in major_holders.iterrows():
+            if len(row) == 0:
+                continue
+            rows.append((normalize_text(label), row.iloc[0]))
+
+        for label, value in rows:
+            if label == "INSTITUTIONSPERCENTHELD":
+                return normalize_major_holder_value(value)
+        for label, value in rows:
+            if "INSTITUTION" in label and "FLOAT" not in label:
+                return normalize_major_holder_value(value)
+        return 0
+    except Exception:
+        return 0
+
+
+def normalize_major_holder_value(value: Any) -> float:
+    if isinstance(value, str):
+        value = value.strip().replace("%", "").replace(",", "")
+    return normalize_ownership_percent(value)
 
 
 def fetch_finnhub_quote(symbol: str, logger: MarketRequestLogger, limiter: MarketRequestLimiter) -> dict[str, Any]:
@@ -1141,18 +1249,85 @@ def extract_fundamental_fields(financials: pd.DataFrame) -> dict[str, Any]:
     return fields
 
 
+def extract_direct_yfinance_annual_fields(financials: pd.DataFrame) -> dict[str, Any]:
+    if financials is None or financials.empty:
+        return {}
+    if "Total Revenue" not in financials.index or "Net Income" not in financials.index:
+        return {}
+
+    revenue = financials.loc["Total Revenue"]
+    profit = financials.loc["Net Income"]
+    fields: dict[str, Any] = {}
+    for idx, date in enumerate(financials.columns[:5], start=1):
+        try:
+            year = pd.to_datetime(date).year
+        except Exception:
+            continue
+        revenue_value = revenue.get(date)
+        profit_value = profit.get(date)
+        fields[f"revenue_year_{idx}_label"] = year
+        fields[f"revenue_year_{idx}_value"] = number_or_zero(revenue_value) if revenue_value is not None else None
+        fields[f"profit_year_{idx}_label"] = year
+        fields[f"profit_year_{idx}_value"] = number_or_zero(profit_value) if profit_value is not None else None
+    revenue_values = [
+        number_or_zero(fields.get(f"revenue_year_{idx}_value"))
+        for idx in range(1, 5)
+        if fields.get(f"revenue_year_{idx}_value") is not None
+    ]
+    profit_values = [
+        number_or_zero(fields.get(f"profit_year_{idx}_value"))
+        for idx in range(1, 5)
+        if fields.get(f"profit_year_{idx}_value") is not None
+    ]
+    if len(revenue_values) >= 4:
+        fields["revenue_status"] = (
+            "Growth"
+            if revenue_values[0] > revenue_values[1] > revenue_values[2] > revenue_values[3]
+            else "Nope"
+        )
+    if len(profit_values) >= 4:
+        fields["profit_status"] = (
+            "Growth"
+            if profit_values[0] > profit_values[1] > profit_values[2] > profit_values[3]
+            else "Nope"
+        )
+    return fields
+
+
+def has_annual_fundamental_fields(fields: dict[str, Any]) -> bool:
+    for prefix in ("revenue", "profit"):
+        for idx in range(1, 6):
+            if fields.get(f"{prefix}_year_{idx}_label") is not None and fields.get(f"{prefix}_year_{idx}_value") is not None:
+                return True
+    return False
+
+
 def has_real_fundamentals(snapshot: dict[str, Any]) -> bool:
-    try:
-        ownership = float(snapshot.get("inst_ownership") or 0)
-    except Exception:
-        ownership = 0
     return (
-        ownership > 0
-        or snapshot.get("revenue_status") == "Growth"
+        snapshot.get("revenue_status") == "Growth"
         or snapshot.get("profit_status") == "Growth"
         or any(number_or_zero(snapshot.get(f"revenue_year_{idx}_value")) > 0 for idx in range(1, 6))
         or any(number_or_zero(snapshot.get(f"profit_year_{idx}_value")) > 0 for idx in range(1, 6))
     )
+
+
+def fundamentals_has_full_annual_series(snapshot: dict[str, Any]) -> bool:
+    return annual_value_count(snapshot, "revenue") >= 4 and annual_value_count(snapshot, "profit") >= 4
+
+
+def annual_value_count(snapshot: dict[str, Any], prefix: str) -> int:
+    count = 0
+    for idx in range(1, 6):
+        label = snapshot.get(f"{prefix}_year_{idx}_label")
+        value = snapshot.get(f"{prefix}_year_{idx}_value")
+        if label is None or value is None:
+            continue
+        if isinstance(value, float) and pd.isna(value):
+            continue
+        if number_or_zero(value) == 0:
+            continue
+        count += 1
+    return count
 
 
 def recalc_performance(snapshot: dict[str, Any]) -> dict[str, Any]:

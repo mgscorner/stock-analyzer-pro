@@ -11,7 +11,7 @@ import {
 } from './utils';
 import './styles.css';
 
-const annualYears = targetAnnualYears();
+const annualYears = targetAnnualYears(4);
 
 const columns = [
   ['ticker', 'Ticker'],
@@ -31,12 +31,10 @@ const columns = [
   ['revenueYear2', `Revenue ${annualYears[1]}`],
   ['revenueYear3', `Revenue ${annualYears[2]}`],
   ['revenueYear4', `Revenue ${annualYears[3]}`],
-  ['revenueYear5', `Revenue ${annualYears[4]}`],
   ['profitYear1', `Profit ${annualYears[0]}`],
   ['profitYear2', `Profit ${annualYears[1]}`],
   ['profitYear3', `Profit ${annualYears[2]}`],
   ['profitYear4', `Profit ${annualYears[3]}`],
-  ['profitYear5', `Profit ${annualYears[4]}`],
   ['marketCap', 'Market Cap'],
   ['dataStatus', 'Status'],
   ['comment', 'Comment'],
@@ -255,7 +253,7 @@ function Dashboard({ session }) {
     const symbols = Object.keys(watchlistData);
     if (symbols.length) {
       loadSnapshots(symbols).then((loadedSnapshots) => {
-        maybeRefreshVisiblePrices(symbols, loadedSnapshots || {}, 'visible_quote_initial');
+        maybeRefreshVisibleData(symbols, loadedSnapshots || {}, 'visible_data_initial');
       });
       if (manageTicker && !symbols.includes(manageTicker)) setManageTicker('');
       if (chartTicker && !symbols.includes(chartTicker)) setChartTicker('');
@@ -272,7 +270,7 @@ function Dashboard({ session }) {
     if (!symbols.length) return undefined;
 
     const timer = window.setInterval(() => {
-      maybeRefreshVisiblePrices(symbols, snapshots, 'visible_quote_scheduled');
+      maybeRefreshVisibleData(symbols, snapshots, 'visible_data_scheduled');
     }, PRICE_TTL_MS);
 
     return () => window.clearInterval(timer);
@@ -392,21 +390,18 @@ function Dashboard({ session }) {
     return next;
   }
 
-  async function maybeRefreshVisiblePrices(symbols, snapshotMap, mode) {
-    const staleSymbols = symbols.filter(
-      (symbol) => !pendingInitialSymbolsRef.current.has(symbol) && isPriceStale(snapshotMap[symbol])
-    );
-    if (!staleSymbols.length) return;
-
+  async function maybeRefreshVisibleData(symbols, snapshotMap, mode) {
+    const dueSymbols = symbols.filter((symbol) => !pendingInitialSymbolsRef.current.has(symbol));
+    if (!dueSymbols.length) return;
     const bucket = Math.floor(Date.now() / PRICE_TTL_MS);
-    const signature = `${activeList}|${mode}|${bucket}|${staleSymbols.sort().join(',')}`;
+    const signature = `${activeList}|${mode}|${bucket}|${dueSymbols.sort().join(',')}`;
     if (autoPriceRefreshRef.current === signature) return;
     autoPriceRefreshRef.current = signature;
 
     try {
-      await requestRefresh(staleSymbols, activeList, { mode, layers: ['quote'], quiet: true });
+      await requestRefresh(dueSymbols, activeList, { mode: 'smart_visible', layers: [], quiet: true });
     } catch (error) {
-      setMessage(`Price refresh could not start: ${error.message}`, 'error');
+      setMessage(`Refresh could not start: ${error.message}`, 'error');
     }
   }
 
