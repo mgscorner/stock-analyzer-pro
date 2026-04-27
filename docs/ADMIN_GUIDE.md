@@ -114,6 +114,7 @@ WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
 WORKER_SCHEDULER_INTERVAL_SECONDS=120
 WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE=30
 WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE=15
+WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES=10
 ```
 
 | Variable | Required | Default | Purpose |
@@ -152,6 +153,7 @@ WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE=15
 | `WORKER_SCHEDULER_INTERVAL_SECONDS` | optional | `120` | Sleep between scheduler cycles. |
 | `WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE` | optional | `30` | Max watchlist symbols processed per scheduler cycle. |
 | `WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE` | optional | `15` | Max non-watchlist universe symbols processed per closed-market scheduler cycle. |
+| `WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES` | optional | `10` | Minutes before a watchlist heartbeat expires and the scheduler downgrades it from active priority. |
 
 Market mode policy:
 
@@ -234,6 +236,12 @@ WORKER_DEBUG_MARKET_REQUESTS=0
 
 ## Background Scheduler
 
+Before using active visible/hidden watchlist priority, run this SQL in Supabase:
+
+```text
+production_app/docs/watchlist_activity_schema.sql
+```
+
 Run the scheduler as a separate long-running process from the API worker:
 
 ```powershell
@@ -245,9 +253,13 @@ Current scheduler behavior:
 
 ```text
 every cycle:
-    load distinct watchlist symbols
+    load active visible watchlist symbols
+    load active hidden watchlist symbols
+    load inactive watchlist symbols
     load stock_universes symbols
-    refresh due watchlist symbols first
+    refresh due active visible symbols first
+    refresh due active hidden symbols second
+    if no active sessions exist, refresh inactive watchlist symbols next
     only process non-watchlist universe symbols when the market is closed
 ```
 
@@ -261,8 +273,10 @@ once a user logs in, user-relevant symbols should move back to the fast lane
 Priority rules:
 
 ```text
-watchlist symbols first
-non-watchlist universe symbols second
+active visible watchlist symbols first
+active hidden watchlist symbols second
+inactive watchlist symbols next when no active sessions exist
+non-watchlist universe symbols last
 within a symbol, fundamentals/history due work ranks above price-only work
 ```
 
@@ -277,8 +291,8 @@ closed-market universe passes skip price-only refreshes
 Current limitation:
 
 ```text
-the scheduler does not yet persist true per-user visible-state priority
-it treats all watchlist symbols as the high-priority user set
+the frontend heartbeat updates watchlist_activity only while the browser session is running
+if the browser closes unexpectedly, the scheduler waits for the active window to expire before downgrading that watchlist
 ```
 
 Planned improvement:

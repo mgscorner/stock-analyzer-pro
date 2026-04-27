@@ -117,6 +117,37 @@ def insert_market_request_logs(client: Client, events: list[dict[str, Any]]) -> 
     execute_with_retry(lambda: client.table("market_request_logs").insert(events).execute())
 
 
+def upsert_watchlist_activity(
+    client: Client,
+    user_id: str,
+    watchlists: list[str],
+    active_watchlist: str | None,
+) -> None:
+    if not user_id or not watchlists:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    seen = set()
+    active_name = str(active_watchlist or "").strip()
+    for raw_name in watchlists:
+        name = str(raw_name or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        rows.append(
+            {
+                "user_id": user_id,
+                "watchlist_name": name,
+                "is_visible": name == active_name,
+                "last_seen_at": now,
+                "updated_at": now,
+            }
+        )
+    if not rows:
+        return
+    execute_with_retry(lambda: client.table("watchlist_activity").upsert(rows, on_conflict="user_id,watchlist_name").execute())
+
+
 def upsert_snapshot(client: Client, snapshot: dict[str, Any]) -> None:
     existing = get_snapshot(client, snapshot["symbol"]) or {}
     merged = merge_snapshot(existing, snapshot)

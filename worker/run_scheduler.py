@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from app.main import (
@@ -46,17 +46,31 @@ def main() -> int:
 
 def run_cycle(watchlist_batch_size: int, universe_batch_size: int) -> None:
     policy = market_policy_now(settings)
-    watchlist_symbols = load_watchlist_symbols()
-    universe_symbols = [symbol for symbol in load_universe_symbols() if symbol not in set(watchlist_symbols)]
+    buckets = load_watchlist_priority_buckets()
+    all_watchlist_symbols = set(buckets["active_visible"] + buckets["active_hidden"] + buckets["inactive"])
+    universe_symbols = [symbol for symbol in load_universe_symbols() if symbol not in all_watchlist_symbols]
 
     print(
         f"[{datetime.now().isoformat(timespec='seconds')}] "
-        f"mode={policy.mode} watchlist_symbols={len(watchlist_symbols)} universe_symbols={len(universe_symbols)}"
+        f"mode={policy.mode} "
+        f"active_visible={len(buckets['active_visible'])} "
+        f"active_hidden={len(buckets['active_hidden'])} "
+        f"inactive_watchlists={len(buckets['inactive'])} "
+        f"universe_symbols={len(universe_symbols)}"
     )
 
-    watchlist_due = due_symbols(watchlist_symbols, policy.mode, include_after_hours_prices=True)
-    if watchlist_due:
-        process_symbols("watchlists", watchlist_due[:watchlist_batch_size])
+    active_visible_due = due_symbols(buckets["active_visible"], policy.mode, include_after_hours_prices=True)
+    if active_visible_due:
+        process_symbols("active-visible", active_visible_due[:watchlist_batch_size])
+
+    active_hidden_due = due_symbols(buckets["active_hidden"], policy.mode, include_after_hours_prices=True)
+    if active_hidden_due:
+        process_symbols("active-hidden", active_hidden_due[:watchlist_batch_size])
+
+    if not buckets["has_active_sessions"]:
+        inactive_due = due_symbols(buckets["inactive"], policy.mode, include_after_hours_prices=False)
+        if inactive_due:
+            process_symbols("inactive-watchlists", inactive_due[:watchlist_batch_size])
 
     if policy.mode in {MARKET_CLOSED_WEEKDAY, MARKET_CLOSED_WEEKEND}:
         universe_due = due_symbols(universe_symbols, policy.mode, include_after_hours_prices=False)
@@ -110,17 +124,63 @@ def layer_priority(layers: list[str]) -> int:
     return score
 
 
-def load_watchlist_symbols() -> list[str]:
-    result = execute_with_retry(lambda: service_client.table("watchlists").select("ticker_symbol").execute())
-    seen = set()
-    symbols: list[str] = []
-    for row in result.data or []:
-        symbol = str(row.get("ticker_symbol") or "").strip().upper()
-        if not symbol or symbol in seen:
+def load_watchlist_priority_buckets() -> dict[str, object]:
+    watchlist_rows = load_all_watchlist_rows()
+    cutoff = (datetime.utcnow() - timedelta(minutes=settings.active_watchlist_window_minutes)).isoformat()
+    activity_rows = execute_with_retry(
+        lambda: service_client.table("watchlist_activity")
+        .select("user_id,watchlist_name,is_visible,last_seen_at")
+        .gte("last_seen_at", cutoff)
+        .execute()
+    ).data or []
+
+    active_visible_keys = set()
+    active_hidden_keys = set()
+    for row in activity_rows:
+        key = (str(row.get("user_id") or ""), str(row.get("watchlist_name") or ""))
+        if not key[0] or not key[1]:
             continue
-        seen.add(symbol)
-        symbols.append(symbol)
-    return symbols
+        if bool(row.get("is_visible")):
+            active_visible_keys.add(key)
+        else:
+            active_hidden_keys.add(key)
+
+    visible_symbols: list[str] = []
+    hidden_symbols: list[str] = []
+    inactive_symbols: list[str] = []
+    seen_visible = set()
+    seen_hidden = set()
+    seen_inactive = set()
+
+    for row in watchlist_rows:
+        key = (str(row.get("user_id") or ""), str(row.get("watchlist_name") or ""))
+        symbol = str(row.get("ticker_symbol") or "").strip().upper()
+        if not key[0] or not key[1] or not symbol:
+            continue
+        if key in active_visible_keys:
+            if symbol not in seen_visible:
+                seen_visible.add(symbol)
+                visible_symbols.append(symbol)
+        elif key in active_hidden_keys:
+            if symbol not in seen_hidden:
+                seen_hidden.add(symbol)
+                hidden_symbols.append(symbol)
+        else:
+            if symbol not in seen_inactive:
+                seen_inactive.add(symbol)
+                inactive_symbols.append(symbol)
+
+    return {
+        "active_visible": visible_symbols,
+        "active_hidden": hidden_symbols,
+        "inactive": inactive_symbols,
+        "has_active_sessions": bool(active_visible_keys or active_hidden_keys),
+    }
+
+
+def load_all_watchlist_rows() -> list[dict[str, object]]:
+    result = execute_with_retry(lambda: service_client.table("watchlists").select("user_id,watchlist_name,ticker_symbol").execute())
+    return result.data or []
 
 
 def load_universe_symbols() -> list[str]:

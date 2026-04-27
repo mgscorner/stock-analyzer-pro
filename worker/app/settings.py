@@ -44,6 +44,7 @@ class Settings:
     scheduler_interval_seconds: int
     scheduler_watchlist_batch_size: int
     scheduler_universe_batch_size: int
+    active_watchlist_window_minutes: int
 
 
 def get_settings() -> Settings:
@@ -86,6 +87,7 @@ def get_settings() -> Settings:
         scheduler_interval_seconds=safe_int(os.getenv("WORKER_SCHEDULER_INTERVAL_SECONDS"), 120),
         scheduler_watchlist_batch_size=safe_int(os.getenv("WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE"), 30),
         scheduler_universe_batch_size=safe_int(os.getenv("WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE"), 15),
+        active_watchlist_window_minutes=safe_int(os.getenv("WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES"), 10),
     )
 
 

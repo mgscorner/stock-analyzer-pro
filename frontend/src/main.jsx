@@ -12,6 +12,7 @@ import {
 import './styles.css';
 
 const annualYears = targetAnnualYears(4);
+const ACTIVITY_HEARTBEAT_MS = 60 * 1000;
 
 const columns = [
   ['ticker', 'Ticker'],
@@ -277,6 +278,15 @@ function Dashboard({ session }) {
   }, [watchlistData, snapshots]);
 
   useEffect(() => {
+    if (!watchlists.length || !activeList) return undefined;
+    reportWatchlistActivity();
+    const timer = window.setInterval(() => {
+      reportWatchlistActivity();
+    }, ACTIVITY_HEARTBEAT_MS);
+    return () => window.clearInterval(timer);
+  }, [watchlists, activeList]);
+
+  useEffect(() => {
     if (manageTicker) {
       setManageComment(watchlistData[manageTicker] || '');
     } else {
@@ -440,6 +450,26 @@ function Dashboard({ session }) {
       setMessage(body.message || `Refreshing ${cleanSymbols.join(', ')}...`);
     }
     return job;
+  }
+
+  async function reportWatchlistActivity() {
+    if (!workerApiUrl || !watchlists.length || !activeList) return;
+    const accessToken = await currentAccessToken();
+    const response = await fetch(`${workerApiUrl}/activity`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        watchlists,
+        active_watchlist: activeList,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      console.warn('watchlist activity update failed', body.detail || body.error || response.status);
+    }
   }
 
   async function loadRefreshJob(jobId) {

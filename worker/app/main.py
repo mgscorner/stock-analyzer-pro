@@ -36,6 +36,7 @@ from .supabase_db import (
     make_service_client,
     mark_job,
     mark_symbol_failed,
+    upsert_watchlist_activity,
     upsert_snapshot,
 )
 
@@ -69,6 +70,16 @@ class RefreshResponse(BaseModel):
     status: str
     symbols: list[str]
     message: str | None = None
+
+
+class ActivityRequest(BaseModel):
+    watchlists: list[str] = Field(default_factory=list)
+    active_watchlist: str | None = None
+
+
+class ActivityResponse(BaseModel):
+    ok: bool
+    tracked_watchlists: int
 
 
 def bearer_token(authorization: Annotated[str | None, Header()] = None) -> str:
@@ -167,6 +178,19 @@ def job_status(job_id: str, user: Annotated[dict, Depends(current_user)]) -> dic
     return {"ok": True, "job": job}
 
 
+@app.post("/activity", response_model=ActivityResponse)
+def record_activity(
+    request: ActivityRequest,
+    user: Annotated[dict, Depends(current_user)],
+) -> ActivityResponse:
+    watchlists = clean_watchlist_names(request.watchlists)
+    active_watchlist = str(request.active_watchlist or "").strip() or None
+    if active_watchlist and active_watchlist not in watchlists:
+        watchlists.append(active_watchlist)
+    upsert_watchlist_activity(service_client, user["id"], watchlists, active_watchlist)
+    return ActivityResponse(ok=True, tracked_watchlists=len(watchlists))
+
+
 def clean_symbols(raw_symbols: list[str]) -> list[str]:
     symbols: list[str] = []
     seen = set()
@@ -197,6 +221,18 @@ def clean_layers(raw_layers: list[str], mode: str) -> list[str]:
     if mode == "visible_full":
         return ["quote", "history", "fundamentals"]
     return ["quote"]
+
+
+def clean_watchlist_names(raw_names: list[str]) -> list[str]:
+    names: list[str] = []
+    seen = set()
+    for raw in raw_names:
+        name = str(raw or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
 
 
 def smart_visible_plan(symbols: list[str]) -> dict[str, list[str]]:
