@@ -346,13 +346,12 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                core_future = executor.submit(fetch_snapshot, symbol, ["quote", "history"], logger, limiter)
-                fundamentals_future = executor.submit(fetch_snapshot, symbol, ["fundamentals"], logger, limiter)
-                core_snapshot = core_future.result()
-                fundamentals_snapshot = fundamentals_future.result()
-            merged_snapshot = merge_snapshot(core_snapshot, fundamentals_snapshot)
-            upsert_snapshot(service_client, merged_snapshot)
+            core_snapshot = fetch_snapshot(symbol, ["quote", "history"], logger, limiter)
+            upsert_snapshot(service_client, core_snapshot)
+            try:
+                refresh_visible_missing_fundamentals(symbol, logger, [])
+            except Exception as fundamentals_exc:
+                print(f"Initial fundamentals refresh deferred for {symbol}: {fundamentals_exc}")
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
@@ -533,3 +532,4 @@ def merge_visible_fundamentals(existing: dict[str, Any], payload: dict[str, Any]
             continue
         merged[key] = value
     return merged
+
