@@ -312,6 +312,16 @@ python bootstrap_full_cache.py --symbols AAPL --skip-ownership-recalc
 python bootstrap_full_cache.py --universe sp500 --missing-only --refetch-after-minutes 15 --limit 25
 ```
 
+### Timestamp Backfill
+
+After a preload run, if the cache already contains the fetched values but the timestamp columns need a one-time backfill, run:
+
+```text
+production_app/docs/stamp_cache_timestamps.sql
+```
+
+This stamps only rows that already contain real price, history, or fundamentals data. It does not overwrite the fetched values themselves.
+
 ### SEC 13F Ownership Probe
 
 Prototype institutional ownership from SEC 13F data sets:
