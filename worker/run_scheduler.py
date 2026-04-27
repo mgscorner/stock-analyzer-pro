@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from uuid import uuid4
 
 from app.main import (
     due_layers_for_visible,
@@ -64,7 +65,7 @@ def run_cycle(watchlist_batch_size: int, universe_batch_size: int) -> None:
 
 
 def process_symbols(label: str, symbols: list[str]) -> None:
-    logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=f"scheduler-{label}")
+    logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=str(uuid4()))
     limiter = MarketRequestLimiter(
         enabled=settings.enable_request_limiter,
         quote_min_interval_ms=settings.quote_min_interval_ms,

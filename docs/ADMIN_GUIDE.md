@@ -251,6 +251,13 @@ every cycle:
     only process non-watchlist universe symbols when the market is closed
 ```
 
+Design direction:
+
+```text
+if no users are active, the highest-priority short interval is not necessary
+once a user logs in, user-relevant symbols should move back to the fast lane
+```
+
 Priority rules:
 
 ```text
@@ -272,6 +279,18 @@ Current limitation:
 ```text
 the scheduler does not yet persist true per-user visible-state priority
 it treats all watchlist symbols as the high-priority user set
+```
+
+Planned improvement:
+
+```text
+add active-session and last-visible tracking
+split scheduler inputs into:
+    active visible symbols
+    active hidden-watchlist symbols
+    inactive watchlist symbols
+    background universe symbols
+when no active sessions exist, relax the high-priority cycle and let background work dominate
 ```
 
 ### SEC Fundamentals Bootstrap
