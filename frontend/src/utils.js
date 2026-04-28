@@ -49,12 +49,14 @@ export function displayRow(symbol, comment, snapshot = {}) {
     : hasFundamentalsData
       ? 'N/A'
       : 'Updating...';
-  const dataStatus = snapshot.last_error
-    ? 'Update Failed'
-    : hasSnapshot && hasUsablePrice && hasHistory && hasFundamentalsData
-      ? 'OK'
-    : hasSnapshot && hasUsablePrice
-        ? 'Partial'
+  const hasCoreData = hasSnapshot && hasUsablePrice && hasHistory && hasFundamentalsData;
+  const hasUsablePartialData = hasSnapshot && hasUsablePrice;
+  const dataStatus = hasCoreData
+    ? 'OK'
+    : hasUsablePartialData
+      ? 'Partial'
+      : snapshot.last_error
+        ? 'Update Failed'
         : 'Needs Cache';
 
   return {

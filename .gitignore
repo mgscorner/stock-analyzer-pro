@@ -36,3 +36,10 @@ temp/
 worker/index_exports/
 worker/sec_cache/
 worker/local_test_scripts/
+
+# Deployment local state
+deployment/artifacts/
+deployment/*.key
+deployment/*.key.pub
+deployment/windows/deploy_config.bat
+deployment/windows/worker.env

@@ -1,129 +1,122 @@
 # Deployment Runbook
 
-This is the Oracle production procedure for the current app shape.
+This runbook describes the repeatable VM deployment model for the current prototype.
 
-Current production layout:
+It is designed for:
 
-```text
-frontend:
-    static React build
-    hosted behind HTTPS
+- one Oracle Ubuntu VM
+- one public host name or public IP
+- one shared Python virtual environment
+- nginx serving the frontend and proxying `/api/*` to the worker
+- systemd managing the worker and scheduler
 
-worker API:
-    FastAPI on Oracle VM
-    handles /refresh, /jobs, /activity
+## Deployment Model
 
-scheduler:
-    separate long-running Python process on Oracle VM
-    drives background refresh priority
-
-Supabase:
-    auth
-    watchlists
-    stock_snapshots
-    refresh_jobs
-    market_request_logs
-    stock_universes
-    watchlist_activity
-```
-
-## 1. Oracle VM Shape
-
-Minimum practical VM:
+Stable server paths:
 
 ```text
-Ubuntu 22.04 or newer
-2 OCPU
-8 GB RAM
-public IP
-outbound internet access to Supabase, Yahoo, Finnhub, FMP, SEC
-```
-
-Open inbound ports:
-
-```text
-22    SSH
-80    HTTP  (only if reverse proxy handles redirect/ACME)
-443   HTTPS
-8000  do not expose publicly if reverse proxy is used
-```
-
-Recommended:
-
-```text
-keep 8000 private to localhost
-put Caddy or Nginx in front of the worker
-serve the frontend from static hosting or from the proxy separately
-```
-
-## 2. Directory Layout
-
-Suggested Oracle paths:
-
-```text
-/opt/stock-analyzer/app
-/opt/stock-analyzer/logs
-/opt/stock-analyzer/venv
+/opt/stock-analyzer/releases/<release-name>/production_app
+/opt/stock-analyzer/current
 /opt/stock-analyzer/env/worker.env
+/opt/stock-analyzer/venv
 ```
 
-Suggested copy target:
+Rules:
+
+- `current` is a symlink to the active release
+- each deploy creates a new release directory
+- nginx serves from `current/frontend/dist`
+- systemd runs from `current/worker`
+- rollback is a symlink switch plus service restarts
+
+## What Runs Where
 
 ```text
-/opt/stock-analyzer/app/production_app
+nginx
+    serves frontend
+    proxies /api/* to 127.0.0.1:8000
+
+worker API
+    FastAPI on 127.0.0.1:8000
+
+scheduler
+    separate systemd service
+
+Supabase
+    auth + application database
 ```
 
-## 3. VM Bootstrap
+## Required Oracle Networking
 
-Install system packages:
+The VM must have:
 
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip git curl
+- public IPv4 address
+- public subnet
+- route table with `0.0.0.0/0 -> Internet Gateway`
+
+Ingress rules must allow:
+
+```text
+TCP 22   source all or your IP
+TCP 80   source 0.0.0.0/0
+TCP 443  source 0.0.0.0/0
 ```
 
-Optional reverse proxy:
+For HTTP and HTTPS, the rule must be:
 
-```bash
-sudo apt install -y caddy
+```text
+source port range: all
+destination port range: 80 or 443
 ```
 
-Create runtime directories:
+## Required Local Files
 
-```bash
-sudo mkdir -p /opt/stock-analyzer/app
-sudo mkdir -p /opt/stock-analyzer/logs
-sudo mkdir -p /opt/stock-analyzer/env
-sudo chown -R $USER:$USER /opt/stock-analyzer
+Windows deployment wrappers live in:
+
+- [deployment/windows](C:/01_DATA/MyApps/AnalyzerAppToCodex/production_app/deployment/windows)
+
+Create this file locally before deploying:
+
+- `deployment/windows/deploy_config.bat`
+
+Start from:
+
+- [deploy_config.example.bat](C:/01_DATA/MyApps/AnalyzerAppToCodex/production_app/deployment/windows/deploy_config.example.bat)
+
+Important values:
+
+```text
+PROJECT_ROOT
+SSH_KEY
+DEPLOY_USER
+DEPLOY_HOST
+PUBLIC_HOST
+LETSENCRYPT_EMAIL
+FRONTEND_SUPABASE_URL
+FRONTEND_SUPABASE_ANON_KEY
+FRONTEND_WORKER_API_URL=/api
+REMOTE_RELEASE_UPLOAD_DIR
 ```
 
-Copy the repo to Oracle:
+The production frontend API URL should be:
 
-```bash
-scp -r production_app user@oracle-vm:/opt/stock-analyzer/app/
+```text
+VITE_WORKER_API_URL=/api
 ```
 
-Create the virtual environment:
+That avoids hardcoding raw worker IPs into the built frontend.
 
-```bash
-cd /opt/stock-analyzer
-python3 -m venv venv
-source /opt/stock-analyzer/venv/bin/activate
-pip install --upgrade pip
-pip install -r /opt/stock-analyzer/app/production_app/worker/requirements.txt
-```
+Optional local secret file for easier repeat deployments:
 
-Build the frontend locally before upload, or on the VM if Node is available:
+- `deployment/windows/worker.env`
 
-```bash
-cd /opt/stock-analyzer/app/production_app/frontend
-npm install
-npm run build
-```
+This file is not committed to git and can be uploaded automatically by:
 
-## 4. Worker Environment
+- [upload_worker_env.bat](C:/01_DATA/MyApps/AnalyzerAppToCodex/production_app/deployment/windows/upload_worker_env.bat)
 
-Create:
+## Required Server Environment File
+
+Create on the VM:
 
 ```text
 /opt/stock-analyzer/env/worker.env
@@ -131,11 +124,9 @@ Create:
 
 Start from:
 
-```text
-production_app/worker/.env.example
-```
+- [worker/.env.example](C:/01_DATA/MyApps/AnalyzerAppToCodex/production_app/worker/.env.example)
 
-Required production values:
+Minimum required values:
 
 ```text
 SUPABASE_URL=...
@@ -144,291 +135,239 @@ SUPABASE_SERVICE_ROLE_KEY=...
 FINNHUB_API_KEY=...
 FMP_API_KEY=...
 SEC_USER_AGENT=real-name real-email@example.com
-WORKER_ALLOWED_ORIGINS=https://your-frontend-domain.example
+WORKER_ALLOWED_ORIGINS=https://your-domain.example
 WORKER_DEBUG_MARKET_REQUESTS=0
 WORKER_ENABLE_REQUEST_LIMITER=1
-WORKER_ENABLE_QUOTE_FAST_LANE=0
 WORKER_ENABLE_FUNDAMENTALS_FALLBACKS=0
 WORKER_FUNDAMENTALS_PROVIDER_ORDER=yfinance,sec,finnhub_reported,fmp
-WORKER_MARKET_MAIN_OPEN_HOUR=9
-WORKER_MARKET_MAIN_OPEN_MINUTE=30
-WORKER_MARKET_MAIN_CLOSE_HOUR=16
-WORKER_MARKET_MAIN_CLOSE_MINUTE=0
-WORKER_MARKET_PRE_HOURS=4
-WORKER_MARKET_POST_HOURS=4
-WORKER_PRICE_TTL_MAIN_MINUTES=5
-WORKER_PRICE_TTL_PREMARKET_MINUTES=5
-WORKER_PRICE_TTL_POSTMARKET_MINUTES=5
-WORKER_PRICE_TTL_CLOSED_MINUTES=240
-WORKER_HISTORY_TTL_MAIN_MINUTES=1440
-WORKER_HISTORY_TTL_CLOSED_MINUTES=10080
-WORKER_FUNDAMENTALS_TTL_MAIN_MINUTES=1440
-WORKER_FUNDAMENTALS_TTL_CLOSED_MINUTES=4320
-WORKER_OWNERSHIP_TTL_MAIN_MINUTES=10080
-WORKER_OWNERSHIP_TTL_CLOSED_MINUTES=20160
-WORKER_QUOTE_MIN_INTERVAL_MS=300
-WORKER_HISTORY_MIN_INTERVAL_MS=500
-WORKER_FUNDAMENTALS_MIN_INTERVAL_MS=30000
 WORKER_SCHEDULER_INTERVAL_SECONDS=60
-WORKER_SCHEDULER_WATCHLIST_BATCH_SIZE=30
-WORKER_SCHEDULER_UNIVERSE_BATCH_SIZE=15
-WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES=10
 ```
 
-Do not place these in any frontend env file:
+If you are testing temporarily by IP instead of domain, set:
 
 ```text
-SUPABASE_SERVICE_ROLE_KEY
-FINNHUB_API_KEY
-FMP_API_KEY
-SEC_USER_AGENT
+WORKER_ALLOWED_ORIGINS=http://<public-ip>
 ```
 
-## 5. Frontend Environment
+Do not place secrets in any frontend env file.
 
-Frontend production env must contain:
+## Required Supabase SQL
+
+Run these before first real use:
 
 ```text
-VITE_SUPABASE_URL=...
-VITE_SUPABASE_ANON_KEY=...
-VITE_WORKER_API_URL=https://your-worker-domain.example
+docs/supabase_optimized_schema.sql
+docs/ownership_snapshots_schema.sql
+docs/watchlist_activity_schema.sql
+docs/user_feedback_schema.sql
+docs/alerts_schema_update.sql
 ```
 
-Supabase Auth URL configuration must include:
+If your alerts table still has old columns like `ticker` or `target_price`, also run:
 
 ```text
-https://your-frontend-domain.example
-http://localhost:5173
+docs/alerts_schema_cleanup.sql
 ```
 
-## 6. Required Supabase SQL
+## One-Time VM Bootstrap
 
-Before first real use, run:
+After SSH access works and `worker.env` exists on the VM, upload:
 
-```text
-production_app/docs/supabase_optimized_schema.sql
-production_app/docs/ownership_snapshots_schema.sql
-production_app/docs/watchlist_activity_schema.sql
-```
+- release zip
+- `deployment/scripts/bootstrap_vm.sh`
+- `deployment/scripts/deploy_release.sh`
 
-Optional admin/bootstrap SQL:
-
-```text
-production_app/docs/stock_universes_membership_update.sql
-production_app/docs/stamp_cache_timestamps.sql
-```
-
-## 7. First Boot Order
-
-Use this order on a fresh production environment:
-
-1. Run required Supabase schema SQL.
-2. Verify worker env file.
-3. Start worker API.
-4. Confirm `/health`.
-5. Start scheduler.
-6. Build/deploy frontend with production worker URL.
-7. Sign in with one test user.
-8. Verify watchlist activity heartbeat is writing.
-9. Run optional preload/bootstrap jobs.
-
-## 8. Manual Start Commands
-
-Worker API:
+Then run on the VM:
 
 ```bash
-cd /opt/stock-analyzer/app/production_app/worker
-source /opt/stock-analyzer/venv/bin/activate
-set -a
-source /opt/stock-analyzer/env/worker.env
-set +a
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+bash /home/ubuntu/bootstrap_vm.sh
 ```
 
-Scheduler:
-
-```bash
-cd /opt/stock-analyzer/app/production_app/worker
-source /opt/stock-analyzer/venv/bin/activate
-set -a
-source /opt/stock-analyzer/env/worker.env
-set +a
-python run_scheduler.py
-```
-
-## 9. systemd Services
-
-Service unit templates are included in:
+What it does:
 
 ```text
-production_app/deployment/systemd/stock-analyzer-worker.service
-production_app/deployment/systemd/stock-analyzer-scheduler.service
+installs python, nginx, certbot, unzip
+creates /opt/stock-analyzer paths
+creates shared python venv
+installs systemd units
+installs persistent VM firewall allow rules for 80/443
+enables nginx, worker, scheduler services
 ```
 
-Install them:
+This is idempotent and safe to rerun.
 
-```bash
-sudo cp /opt/stock-analyzer/app/production_app/deployment/systemd/stock-analyzer-worker.service /etc/systemd/system/
-sudo cp /opt/stock-analyzer/app/production_app/deployment/systemd/stock-analyzer-scheduler.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable stock-analyzer-worker
-sudo systemctl enable stock-analyzer-scheduler
-sudo systemctl start stock-analyzer-worker
-sudo systemctl start stock-analyzer-scheduler
+## Release Build and Deploy From Windows
+
+The intended Windows flow is:
+
+### 1. Build the release
+
+```bat
+deployment\windows\build_release.bat
 ```
 
-Check status:
-
-```bash
-sudo systemctl status stock-analyzer-worker
-sudo systemctl status stock-analyzer-scheduler
-```
-
-View logs:
-
-```bash
-journalctl -u stock-analyzer-worker -f
-journalctl -u stock-analyzer-scheduler -f
-```
-
-## 10. Reverse Proxy
-
-Recommended:
+This:
 
 ```text
-public HTTPS -> reverse proxy -> 127.0.0.1:8000
+builds the frontend
+injects production frontend env values
+creates a clean release zip
+writes deployment\artifacts\latest_release.txt
 ```
 
-Minimum rule set:
+### 2. Upload the release and remote scripts
+
+```bat
+deployment\windows\upload_release.bat
+```
+
+This uploads:
 
 ```text
-/health
-/refresh
-/jobs/*
-/activity
+latest release zip
+bootstrap_vm.sh
+deploy_release.sh
 ```
 
-Requirements:
+If you maintain a local server env file, upload it with:
+
+```bat
+deployment\windows\upload_worker_env.bat
+```
+
+### 3. Bootstrap and deploy remotely
+
+```bat
+deployment\windows\deploy_remote.bat
+```
+
+This:
 
 ```text
-HTTPS enabled
-CORS origin matches frontend domain
-do not expose service-role secrets anywhere in the proxy config
+runs bootstrap_vm.sh
+runs deploy_release.sh against the uploaded release zip
 ```
 
-## 11. Health Verification
+### 4. Smoke test from Windows
 
-Worker:
-
-```bash
-curl http://127.0.0.1:8000/health
+```bat
+deployment\windows\smoke_test.bat
 ```
 
-Expected:
+### 5. Full deploy shortcut
 
-```json
-{"ok":"true"}
+```bat
+deployment\windows\full_deploy.bat
 ```
 
-Scheduler:
+That runs:
 
 ```text
-console/journal output shows cycle lines
-no uuid/job_id insert errors
-active_visible / active_hidden / inactive_watchlists counts appear
+optional worker env upload
+build
+upload
+deploy
+smoke test
 ```
 
-Supabase checks:
+## What `deploy_release.sh` Does
 
-```sql
-select * from public.watchlist_activity order by last_seen_at desc limit 20;
-```
-
-```sql
-select * from public.refresh_jobs order by created_at desc limit 20;
-```
-
-```sql
-select * from public.market_request_logs order by created_at desc limit 20;
-```
-
-## 12. First Production Tests
-
-Run these after deployment:
+The server deploy script:
 
 ```text
-sign in
-load existing watchlist
-add valid ticker
-reject invalid ticker
-remove ticker
-switch watchlists
-refresh visible list
-verify scheduler starts collecting watchlist activity
-verify active visible watchlist symbols appear in scheduler logs
-verify no worker 500s in add/refresh flow
+unpacks the release zip into /opt/stock-analyzer/releases/<release-name>
+installs Python requirements into the shared venv
+switches /opt/stock-analyzer/current to the new release
+writes nginx config
+restarts worker, scheduler, nginx
+runs smoke_test.sh
+optionally requests or renews Let's Encrypt TLS if:
+    - PUBLIC_HOST is a domain
+    - LETSENCRYPT_EMAIL is provided
 ```
 
-## 13. Optional Preload Jobs
+If `PUBLIC_HOST` is an IP address, TLS is skipped automatically.
 
-Index universe load:
+## HTTPS
 
-```bash
-cd /opt/stock-analyzer/app/production_app/worker
-source /opt/stock-analyzer/venv/bin/activate
-set -a
-source /opt/stock-analyzer/env/worker.env
-set +a
-python create_index_lists.py --output-dir index_exports --write-db
-```
-
-Full cache preload:
-
-```bash
-python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
-```
-
-Yahoo ownership backfill:
-
-```bash
-python backfill_yahoo_ownership.py --universe sp500 nasdaq100 dow30 --spacing-ms 250
-```
-
-Use preload jobs before launch or during low-traffic windows.
-
-## 14. Recovery
-
-Restart services:
-
-```bash
-sudo systemctl restart stock-analyzer-worker
-sudo systemctl restart stock-analyzer-scheduler
-```
-
-Stop services:
-
-```bash
-sudo systemctl stop stock-analyzer-worker
-sudo systemctl stop stock-analyzer-scheduler
-```
-
-If the scheduler is noisy or provider behavior changes:
+Preferred production target:
 
 ```text
-set WORKER_DEBUG_MARKET_REQUESTS=1 temporarily
-restart worker and scheduler
-inspect market_request_logs
-set WORKER_DEBUG_MARKET_REQUESTS=0 again
-restart both services
+real domain
+nginx on port 80 and 443
+certbot --nginx
 ```
 
-## 15. Current Limitations
+Requirements for TLS:
 
-Current production limitations:
+- DNS record pointing to the VM public IP
+- ports `80` and `443` open in Oracle
+- `PUBLIC_HOST` set to the domain
+- `LETSENCRYPT_EMAIL` set in `deploy_config.bat`
+
+If you deploy by raw IP first:
+
+- the app can run over HTTP
+- but HTTPS cannot be provisioned for the IP itself with Let's Encrypt
+
+## Smoke Test Expectations
+
+Server-side smoke test checks:
+
+- worker service active
+- scheduler service active
+- nginx service active
+- `http://127.0.0.1:8000/health`
+- `http://127.0.0.1/`
+- `http://127.0.0.1/api/health`
+
+Windows smoke test checks:
+
+- `http://PUBLIC_HOST/`
+- `http://PUBLIC_HOST/api/health`
+
+## Rollback
+
+Rollback command on the VM:
+
+```bash
+bash /opt/stock-analyzer/current/deployment/scripts/rollback_release.sh
+```
+
+It:
 
 ```text
-frontend heartbeat drives watchlist activity; if a browser disappears without logout, the active window must expire
-no persistent per-symbol visible_count ranking yet
-no automatic bootstrap daemon beyond the current scheduler loop
-reverse proxy config is deployment-specific and not committed yet
+finds the previous release
+switches the current symlink
+restarts worker, scheduler, and nginx
 ```
+
+## Oracle Ubuntu Firewall Note
+
+Oracle Ubuntu images can include host-level iptables rules that allow SSH but reject inbound HTTP and HTTPS by default.
+
+That is separate from Oracle subnet security lists and NSGs.
+
+The bootstrap script now installs a small systemd-managed firewall rule set so the VM itself allows:
+
+```text
+TCP 80
+TCP 443
+```
+
+If HTTP works locally on the VM but public HTTP still times out, always check both:
+
+```text
+Oracle subnet / NSG rules
+VM iptables rules
+```
+
+## Current Recommendation
+
+For the current 2-day prototype window:
+
+1. stabilize this VM path
+2. test the bat-driven deploy/update cycle
+3. move to a real domain
+4. enable HTTPS with certbot
+5. only then share the public link widely

@@ -6,7 +6,7 @@ Requires=stock-analyzer-worker.service
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/opt/stock-analyzer/app/production_app/worker
+WorkingDirectory=/opt/stock-analyzer/current/worker
 EnvironmentFile=/opt/stock-analyzer/env/worker.env
 ExecStart=/opt/stock-analyzer/venv/bin/python run_scheduler.py
 Restart=always
