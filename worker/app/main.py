@@ -13,6 +13,7 @@ from .market_debug import MarketRequestLogger
 from .market_data import (
     batch_quote_snapshots,
     fetch_snapshot,
+    fetch_recent_intraday_bars,
     fetch_yfinance_fundamentals,
     normalize_symbol,
 )
@@ -80,6 +81,13 @@ class ActivityRequest(BaseModel):
 class ActivityResponse(BaseModel):
     ok: bool
     tracked_watchlists: int
+
+
+class IntradayChartResponse(BaseModel):
+    ok: bool
+    symbol: str
+    interval_minutes: int
+    bars: list[dict[str, Any]]
 
 
 def bearer_token(authorization: Annotated[str | None, Header()] = None) -> str:
@@ -189,6 +197,27 @@ def record_activity(
         watchlists.append(active_watchlist)
     upsert_watchlist_activity(service_client, user["id"], watchlists, active_watchlist)
     return ActivityResponse(ok=True, tracked_watchlists=len(watchlists))
+
+
+@app.get("/chart/{symbol}/intraday", response_model=IntradayChartResponse)
+def intraday_chart(
+    symbol: str,
+    user: Annotated[dict, Depends(current_user)],
+    interval_minutes: int = 5,
+) -> IntradayChartResponse:
+    clean_symbol = normalize_symbol(symbol)
+    if not clean_symbol or not SYMBOL_RE.match(clean_symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol.")
+    interval = max(1, min(int(interval_minutes or 5), 60))
+    logger = MarketRequestLogger(enabled=False)
+    limiter = MarketRequestLimiter(
+        enabled=settings.enable_request_limiter,
+        quote_min_interval_ms=settings.quote_min_interval_ms,
+        history_min_interval_ms=settings.history_min_interval_ms,
+        fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
+    )
+    bars = fetch_recent_intraday_bars(clean_symbol, interval, logger, limiter, range_value="1d")
+    return IntradayChartResponse(ok=True, symbol=clean_symbol, interval_minutes=interval, bars=bars)
 
 
 def clean_symbols(raw_symbols: list[str]) -> list[str]:

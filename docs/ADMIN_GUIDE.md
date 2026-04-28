@@ -303,6 +303,13 @@ Before using persistent alerts and backend alert evaluation, run this SQL in Sup
 production_app/docs/alerts_schema_update.sql
 ```
 
+If your database still has legacy alert columns such as `ticker` or `target_price`,
+run this cleanup right after the update:
+
+```text
+production_app/docs/alerts_schema_cleanup.sql
+```
+
 Current alert behavior:
 
 ```text

@@ -1178,6 +1178,59 @@ def fetch_latest_intraday_bar(
     return {}
 
 
+def fetch_recent_intraday_bars(
+    symbol: str,
+    interval_minutes: int,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+    range_value: str = "1d",
+) -> list[dict[str, Any]]:
+    interval_minutes = max(1, int(interval_minutes or 1))
+    try:
+        limiter.wait("quote")
+        with logger.track(symbol, "quote", "yahoo_intraday_chart_api") as span:
+            response = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"range": range_value, "interval": f"{interval_minutes}m"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=12,
+            )
+            span.status_code = response.status_code
+            response.raise_for_status()
+        data = response.json()
+        result = data.get("chart", {}).get("result", [{}])[0]
+        timestamps = result.get("timestamp") or []
+        quote = result.get("indicators", {}).get("quote", [{}])[0]
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
+        opens = quote.get("open") or []
+        closes = quote.get("close") or []
+        rows: list[dict[str, Any]] = []
+        for ts, open_value, high, low, close in zip(timestamps, opens, highs, lows, closes):
+            if not ts:
+                continue
+            open_num = number_or_zero(open_value)
+            high_num = number_or_zero(high)
+            low_num = number_or_zero(low)
+            close_num = number_or_zero(close)
+            if high_num <= 0 or low_num <= 0 or close_num <= 0:
+                continue
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "bar_time": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
+                    "open": open_num if open_num > 0 else close_num,
+                    "high": high_num,
+                    "low": low_num,
+                    "close": close_num,
+                    "interval_minutes": interval_minutes,
+                }
+            )
+        return rows
+    except Exception:
+        return []
+
+
 def safe_fast_info(stock: yf.Ticker) -> dict[str, Any]:
     try:
         fast_info = stock.fast_info

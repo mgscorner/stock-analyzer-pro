@@ -2,13 +2,18 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CrosshairMode, LineStyle, AreaSeries } from 'lightweight-charts';
 import { supabase } from './supabaseClient';
 
-function toChartData(history) {
+function isoDateToUnix(value) {
+  const date = new Date(`${value}T00:00:00Z`);
+  return Math.floor(date.getTime() / 1000);
+}
+
+function toDailyChartData(history) {
   return history
     .map((row) => {
       const time = String(row?.date || '').trim();
       const value = Number(row?.close || 0);
       if (!time || !Number.isFinite(value) || value <= 0) return null;
-      return { time, value };
+      return { time: isoDateToUnix(time), value };
     })
     .filter(Boolean);
 }
@@ -32,7 +37,15 @@ function shiftDays(isoDate, days) {
   return date.toISOString().slice(0, 10);
 }
 
-export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
+function todayUnixDate() {
+  return isoDateToUnix(new Date().toISOString().slice(0, 10));
+}
+
+function notifyAlertsChanged() {
+  window.dispatchEvent(new CustomEvent('alerts-changed'));
+}
+
+export default function ChartPanel({ symbol, snapshot, userId, activeList, focusAlertId = '', onFocusAlertHandled = () => {} }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -46,8 +59,20 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
   const [savingEdit, setSavingEdit] = useState(false);
 
   const history = Array.isArray(snapshot?.history_data) ? snapshot.history_data : [];
-  const chartData = useMemo(() => toChartData(history), [history]);
+  const chartData = useMemo(() => toDailyChartData(history), [history]);
   const currentPrice = Number(snapshot?.price || 0);
+  const displayChartData = useMemo(() => {
+    if (!chartData.length) return [];
+    if (!(currentPrice > 0)) return chartData;
+    const lastPoint = chartData[chartData.length - 1];
+    const todayTime = todayUnixDate();
+    if (lastPoint.time >= todayTime) {
+      const next = [...chartData];
+      next[next.length - 1] = { time: lastPoint.time, value: currentPrice };
+      return next;
+    }
+    return [...chartData, { time: todayTime, value: currentPrice }];
+  }, [chartData, currentPrice]);
   const currentLabel = displayPrice(currentPrice);
   const lastClose = chartData.length ? chartData[chartData.length - 1].value : 0;
   const referencePrice = currentPrice > 0 ? currentPrice : lastClose;
@@ -86,6 +111,14 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
   }, [editingAlertId, currentAlert, referencePrice, previewArmed]);
 
   useEffect(() => {
+    if (!focusAlertId) return;
+    const focusAlert = alerts.find((alert) => alert.id === focusAlertId);
+    if (!focusAlert) return;
+    selectAlertForEdit(focusAlert);
+    onFocusAlertHandled();
+  }, [focusAlertId, alerts]);
+
+  useEffect(() => {
     if (!editingAlertId || !currentAlert?.active) return undefined;
     const nextValue = Number(alertInput);
     const currentValue = Number(currentAlert.threshold || 0);
@@ -115,7 +148,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
   }
 
   useEffect(() => {
-    if (!containerRef.current || !chartData.length) return undefined;
+    if (!containerRef.current || !displayChartData.length) return undefined;
 
     const chart = createChart(containerRef.current, {
       autoSize: true,
@@ -148,16 +181,15 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
       priceLineVisible: true,
       lastValueVisible: true,
     });
-
-    series.setData(chartData);
-    const lastTime = chartData[chartData.length - 1].time;
-    const targetFrom = shiftDays(lastTime, -183);
+    series.setData(displayChartData);
+    const lastTime = displayChartData[displayChartData.length - 1].time;
+    const targetFrom = lastTime - 183 * 24 * 60 * 60;
     const fromIndex = Math.max(
       0,
-      chartData.findIndex((row) => row.time >= targetFrom)
+      displayChartData.findIndex((row) => row.time >= targetFrom)
     );
     chart.timeScale().setVisibleRange({
-      from: chartData[fromIndex].time,
+      from: displayChartData[fromIndex].time,
       to: lastTime,
     });
     chartRef.current = chart;
@@ -175,7 +207,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
       seriesRef.current = null;
       chart.remove();
     };
-  }, [chartData]);
+  }, [displayChartData]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -238,7 +270,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     return <div className="chart-panel muted">Select a row to show its cached chart.</div>;
   }
 
-  if (!chartData.length) {
+  if (!displayChartData.length) {
     return <div className="chart-panel muted">{symbol}: no cached chart history yet.</div>;
   }
 
@@ -297,6 +329,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     setEditingAlertId(data.id);
     setPreviewArmed(false);
     setAlertMessage('Alert created.');
+    notifyAlertsChanged();
   }
 
   async function updateAlertThreshold(value) {
@@ -325,6 +358,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     const next = sortAlerts(alerts.map((alert) => (alert.id === editingAlertId ? data : alert)));
     setAlerts(next);
     setAlertMessage('Alert updated.');
+    notifyAlertsChanged();
   }
 
   async function removeAlert() {
@@ -353,6 +387,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     }
 
     setAlertMessage('Alert removed.');
+    notifyAlertsChanged();
   }
 
   async function reactivateAlert() {
@@ -371,6 +406,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList }) {
     const next = sortAlerts(alerts.map((alert) => (alert.id === editingAlertId ? data : alert)));
     setAlerts(next);
     setAlertMessage('Alert reactivated.');
+    notifyAlertsChanged();
   }
 
   function armCreateModeAt(value) {

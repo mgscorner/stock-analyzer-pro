@@ -245,13 +245,18 @@ function Dashboard({ session }) {
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [showFeedbackPrompt, setShowFeedbackPrompt] = useState(false);
+  const [sidebarAlerts, setSidebarAlerts] = useState([]);
+  const [alertEvents, setAlertEvents] = useState([]);
+  const [focusedAlertId, setFocusedAlertId] = useState('');
+  const [sidebarFolds, setSidebarFolds] = useState(() => loadSidebarFolds(user.id));
   const autoPriceRefreshRef = useRef('');
   const pendingInitialSymbolsRef = useRef(new Set());
 
   useEffect(() => {
     loadConfig();
     loadWatchlists();
-    setShowFeedbackPrompt(shouldShowFeedbackPrompt(user.id));
+    loadAlertSidebar();
+    setShowFeedbackPrompt(true);
   }, []);
 
   useEffect(() => {
@@ -295,16 +300,24 @@ function Dashboard({ session }) {
   }, [watchlists, activeList]);
 
   useEffect(() => {
+    if (chartTicker && watchlistData[chartTicker] !== undefined && chartTicker !== manageTicker) {
+      setManageTicker(chartTicker);
+      return;
+    }
     if (manageTicker) {
       setManageComment(watchlistData[manageTicker] || '');
     } else {
       setManageComment('');
     }
-  }, [manageTicker]);
+  }, [manageTicker, chartTicker, watchlistData]);
 
   useEffect(() => {
     window.localStorage.setItem(hiddenColumnsKey(user.id), JSON.stringify(hiddenColumns));
   }, [hiddenColumns, user.id]);
+
+  useEffect(() => {
+    window.localStorage.setItem(sidebarFoldsKey(user.id), JSON.stringify(sidebarFolds));
+  }, [sidebarFolds, user.id]);
 
   useEffect(() => {
     if (!message) return undefined;
@@ -314,6 +327,18 @@ function Dashboard({ session }) {
     }, messageType === 'error' ? 7000 : 4500);
     return () => window.clearTimeout(timer);
   }, [message, messageType]);
+
+  useEffect(() => {
+    const reload = () => {
+      loadAlertSidebar();
+    };
+    window.addEventListener('alerts-changed', reload);
+    const timer = window.setInterval(reload, 60000);
+    return () => {
+      window.removeEventListener('alerts-changed', reload);
+      window.clearInterval(timer);
+    };
+  }, [user.id]);
 
   useEffect(() => {
     if (!refreshJob?.id) return undefined;
@@ -406,6 +431,63 @@ function Dashboard({ session }) {
     }
     setSnapshots(next);
     return next;
+  }
+
+  async function loadAlertSidebar() {
+    const [{ data: alertsData, error: alertsError }, { data: eventsData, error: eventsError }] = await Promise.all([
+      supabase
+        .from('alerts')
+        .select('id,symbol,condition_type,threshold,active,last_triggered_at')
+        .eq('user_id', user.id)
+        .order('active', { ascending: false })
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('alert_events')
+        .select('id,alert_id,symbol,trigger_price,bar_time,created_at')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(12),
+    ]);
+
+    if (alertsError) {
+      console.warn('alert sidebar load failed', alertsError.message);
+    } else {
+      setSidebarAlerts(alertsData || []);
+    }
+
+    if (eventsError) {
+      console.warn('alert events load failed', eventsError.message);
+    } else {
+      setAlertEvents(eventsData || []);
+    }
+  }
+
+  async function goToAlertSymbol(rawSymbol, alertId = '') {
+    const symbol = normalizeSymbol(rawSymbol);
+    if (!symbol) return;
+    if (watchlistData[symbol] !== undefined) {
+      setChartTicker(symbol);
+      setFocusedAlertId(alertId);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('watchlists')
+      .select('watchlist_name')
+      .eq('user_id', user.id)
+      .eq('ticker_symbol', symbol)
+      .limit(1);
+    if (error) {
+      setMessage(error.message, 'error');
+      return;
+    }
+    const targetList = data?.[0]?.watchlist_name;
+    if (targetList) {
+      setActiveList(targetList);
+      setChartTicker(symbol);
+      setFocusedAlertId(alertId);
+      return;
+    }
+    setMessage(`${symbol} is not in your watchlists.`, 'error');
   }
 
   async function maybeRefreshVisibleData(symbols, snapshotMap, mode) {
@@ -745,6 +827,7 @@ function Dashboard({ session }) {
     : '';
   const statusText = activeRefreshText || message || 'Ready.';
   const statusType = activeRefreshText ? 'info' : message ? messageType : 'idle';
+  const unreadAlertCount = countUnreadAlertEvents(user.id, alertEvents);
 
   function toggleColumn(key) {
     if (key === 'ticker') return;
@@ -757,6 +840,10 @@ function Dashboard({ session }) {
 
   function resetColumns() {
     setHiddenColumns([]);
+  }
+
+  function setSidebarFold(key, open) {
+    setSidebarFolds((current) => ({ ...current, [key]: open }));
   }
 
   function exportVisibleCsv() {
@@ -783,7 +870,8 @@ function Dashboard({ session }) {
         </div>
 
         <section>
-          <h2>Watchlists</h2>
+          <details className="column-panel" open={sidebarFolds.watchlists} onToggle={(event) => setSidebarFold('watchlists', event.currentTarget.open)}>
+            <summary>Manage Watchlists</summary>
           <select value={activeList} onChange={(event) => setActiveList(event.target.value)}>
             {watchlists.map((name) => (
               <option key={name} value={name}>{name}</option>
@@ -809,32 +897,35 @@ function Dashboard({ session }) {
             />
             <button onClick={createWatchlist}>Create</button>
           </div>
+          </details>
         </section>
 
         <section>
-          <h2>Add Ticker</h2>
-          <form className="inline-form" onSubmit={addTicker}>
-            <input value={newTicker} onChange={(event) => setNewTicker(event.target.value)} placeholder="Ticker" />
-            <button type="submit">Add</button>
-          </form>
-        </section>
-
-        {!!Object.keys(watchlistData).length && (
-          <section>
-            <h2>Manage Ticker</h2>
-            <select value={manageTicker} onChange={(event) => setManageTicker(event.target.value)}>
-              <option value="">Select ticker</option>
-              {sortedWatchlistSymbols.map((symbol) => (
-                <option key={symbol} value={symbol}>{symbol}</option>
-              ))}
-            </select>
-            <form onSubmit={saveComment}>
-              <textarea value={manageComment} onChange={(event) => setManageComment(event.target.value)} placeholder="Add a note..." />
-              <button type="submit" disabled={!manageTicker}>Save Comment</button>
-              <button type="button" className="danger ghost" disabled={!manageTicker} onClick={deleteTicker}>Delete Ticker</button>
+          <details className="column-panel" open={sidebarFolds.tickers} onToggle={(event) => setSidebarFold('tickers', event.currentTarget.open)}>
+            <summary>Manage Tickers</summary>
+            <h2>Add Ticker</h2>
+            <form className="inline-form" onSubmit={addTicker}>
+              <input value={newTicker} onChange={(event) => setNewTicker(event.target.value)} placeholder="Ticker" />
+              <button type="submit">Add</button>
             </form>
-          </section>
-        )}
+
+            {!!Object.keys(watchlistData).length && (
+              <>
+                <h2>Manage Ticker</h2>
+                <input
+                  value={manageTicker || ''}
+                  placeholder="Select a row in the table or chart ticker first."
+                  readOnly
+                />
+                <form onSubmit={saveComment}>
+                  <textarea value={manageComment} onChange={(event) => setManageComment(event.target.value)} placeholder="Add a note..." />
+                  <button type="submit" disabled={!manageTicker}>Save Comment</button>
+                  <button type="button" className="danger ghost" disabled={!manageTicker} onClick={deleteTicker}>Delete Ticker</button>
+                </form>
+              </>
+            )}
+          </details>
+        </section>
 
         {Number(config.enable_debug_output) === 1 && (
           <section>
@@ -845,15 +936,60 @@ function Dashboard({ session }) {
         )}
 
         <section>
-          <h2>Feedback</h2>
-          <button className="ghost full-width" onClick={() => openFeedback('general')}>
-            Send Feedback
+          <details className="column-panel" open={sidebarFolds.alerts} onToggle={(event) => setSidebarFold('alerts', event.currentTarget.open)}>
+            <summary>
+              Manage Alerts
+              {unreadAlertCount ? <span className="sidebar-badge">{unreadAlertCount}</span> : null}
+            </summary>
+          <button
+            className="ghost full-width"
+            disabled={!alertEvents.length}
+            onClick={() => {
+              markAlertEventsSeen(user.id, alertEvents);
+              setAlertEvents([...alertEvents]);
+            }}
+          >
+            Mark Triggered Seen
           </button>
+          <div className="alert-sidebar-group">
+            <strong>Active</strong>
+            {sidebarAlerts.filter((alert) => alert.active).length ? (
+              sidebarAlerts
+                .filter((alert) => alert.active)
+                .slice(0, 8)
+                .map((alert) => (
+                  <div key={alert.id} className="alert-sidebar-row">
+                    <button className="ghost alert-symbol-button" onClick={() => goToAlertSymbol(alert.symbol, alert.id)}>
+                      {alert.symbol}
+                    </button>
+                    <span>{alert.condition_type === 'price_below' ? 'Below' : 'Above'} {formatAlertPrice(alert.threshold)}</span>
+                  </div>
+                ))
+            ) : (
+              <p className="sidebar-empty">No active alerts.</p>
+            )}
+          </div>
+          <div className="alert-sidebar-group">
+            <strong>Triggered</strong>
+            {alertEvents.length ? (
+              alertEvents.slice(0, 8).map((event) => (
+                <div key={event.id} className={`alert-sidebar-row ${isAlertEventUnread(user.id, event) ? 'unread' : ''}`}>
+                  <button className="ghost alert-symbol-button" onClick={() => goToAlertSymbol(event.symbol, event.alert_id)}>
+                    {event.symbol}
+                  </button>
+                  <span>{formatAlertPrice(event.trigger_price)} {shortDate(event.created_at)}</span>
+                </div>
+              ))
+            ) : (
+              <p className="sidebar-empty">No triggered alerts yet.</p>
+            )}
+          </div>
+          </details>
         </section>
 
         <section>
-          <details className="column-panel">
-            <summary>Columns</summary>
+          <details className="column-panel" open={sidebarFolds.columns} onToggle={(event) => setSidebarFold('columns', event.currentTarget.open)}>
+            <summary>Manage Columns</summary>
           <div className="column-list">
             {columns.map(([key, label]) => (
               <label key={key} className="column-toggle">
@@ -919,7 +1055,14 @@ function Dashboard({ session }) {
           />
         )}
         {activeList && rows.length > 0 && (
-          <ChartPanel symbol={chartTicker} snapshot={snapshots[chartTicker]} userId={user.id} activeList={activeList} />
+          <ChartPanel
+            symbol={chartTicker}
+            snapshot={snapshots[chartTicker]}
+            userId={user.id}
+            activeList={activeList}
+            focusAlertId={focusedAlertId}
+            onFocusAlertHandled={() => setFocusedAlertId('')}
+          />
         )}
         {feedbackOpen && (
           <div className="modal-backdrop" onClick={() => setFeedbackOpen(false)}>
@@ -976,8 +1119,45 @@ function hiddenColumnsKey(userId) {
   return `stock-analyzer:hidden-columns:${userId}`;
 }
 
+function sidebarFoldsKey(userId) {
+  return `stock-analyzer:sidebar-folds:${userId}`;
+}
+
 function feedbackPromptKey(userId) {
   return `stock-analyzer:feedback-prompt-dismissed:${userId}`;
+}
+
+function alertSeenKey(userId) {
+  return `stock-analyzer:alerts-seen:${userId}`;
+}
+
+function latestAlertEventTimestamp(events) {
+  return events.reduce((latest, event) => {
+    const value = String(event?.created_at || '');
+    return value > latest ? value : latest;
+  }, '');
+}
+
+function markAlertEventsSeen(userId, events) {
+  const latest = latestAlertEventTimestamp(events);
+  if (!latest) return;
+  window.localStorage.setItem(alertSeenKey(userId), latest);
+}
+
+function isAlertEventUnread(userId, event) {
+  const seen = window.localStorage.getItem(alertSeenKey(userId)) || '';
+  const createdAt = String(event?.created_at || '');
+  return Boolean(createdAt && createdAt > seen);
+}
+
+function countUnreadAlertEvents(userId, events) {
+  return events.filter((event) => isAlertEventUnread(userId, event)).length;
+}
+
+function formatAlertPrice(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return 'N/A';
+  return `$${number.toFixed(2)}`;
 }
 
 function loadHiddenColumns(userId) {
@@ -989,18 +1169,27 @@ function loadHiddenColumns(userId) {
   }
 }
 
-function shouldShowFeedbackPrompt(userId) {
+function loadSidebarFolds(userId) {
+  const defaults = {
+    watchlists: true,
+    tickers: true,
+    alerts: true,
+    columns: false,
+  };
   try {
-    const value = Number(window.localStorage.getItem(feedbackPromptKey(userId)) || '0');
-    if (!value) return true;
-    return Date.now() - value >= FEEDBACK_PROMPT_COOLDOWN_MS;
+    const parsed = JSON.parse(window.localStorage.getItem(sidebarFoldsKey(userId)) || '{}');
+    return { ...defaults, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
   } catch {
-    return true;
+    return defaults;
   }
 }
 
+function shouldShowFeedbackPrompt(userId) {
+  return true;
+}
+
 function dismissFeedbackPrompt(userId) {
-  window.localStorage.setItem(feedbackPromptKey(userId), String(Date.now()));
+  window.sessionStorage.setItem(feedbackPromptKey(userId), '1');
 }
 
 function isPriceStale(snapshot) {
