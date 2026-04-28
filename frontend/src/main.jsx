@@ -628,6 +628,17 @@ function Dashboard({ session }) {
     setMessage('');
   }
 
+  function snapshotReadyForAdd(snapshot) {
+    return Boolean(
+      snapshot
+      && Number(snapshot.price || 0) > 0
+      && snapshot.quote_status === 'complete'
+      && snapshot.history_status === 'complete'
+      && snapshot.fundamentals_status === 'complete'
+      && Number(snapshot.inst_ownership || 0) > 0
+    );
+  }
+
   async function addTicker(event) {
     event.preventDefault();
     const symbol = normalizeSymbol(newTicker);
@@ -646,7 +657,7 @@ function Dashboard({ session }) {
 
     const { data: existingSnapshot, error: snapshotError } = await supabase
       .from('stock_snapshots')
-      .select('symbol,price,name')
+      .select('symbol,price,name,quote_status,history_status,fundamentals_status,inst_ownership')
       .eq('symbol', symbol)
       .maybeSingle();
 
@@ -656,37 +667,33 @@ function Dashboard({ session }) {
     }
 
     const nextWatchlistData = { ...watchlistData, [symbol]: '' };
-    if (!existingSnapshot || Number(existingSnapshot.price || 0) <= 0) {
-      pendingInitialSymbolsRef.current.add(symbol);
-    }
+    pendingInitialSymbolsRef.current.add(symbol);
 
-    if (!existingSnapshot || Number(existingSnapshot.price || 0) <= 0) {
-      try {
-        setMessage(`Checking ${symbol}...`);
-        const job = await requestRefresh([symbol], activeList, {
-          mode: 'initial',
-          layers: ['quote', 'history', 'fundamentals'],
-          quiet: true,
-        });
-        const finishedJob = job?.id ? await waitForJob(job.id, 45000) : null;
-        if (!finishedJob || !['done', 'partial'].includes(finishedJob.status)) {
-          throw new Error(finishedJob?.error || 'Ticker validation failed.');
-        }
-        const { data: validatedSnapshot, error: validateError } = await supabase
-          .from('stock_snapshots')
-          .select('symbol,price,name')
-          .eq('symbol', symbol)
-          .maybeSingle();
-        if (validateError) throw validateError;
-        if (!validatedSnapshot || Number(validatedSnapshot.price || 0) <= 0) {
-          throw new Error(`Could not validate ${symbol}. Check the ticker symbol.`);
-        }
-        setMessage(`Found ${validatedSnapshot.name || symbol}. Adding ${symbol}...`);
-      } catch (error) {
-        pendingInitialSymbolsRef.current.delete(symbol);
-        setMessage(`Could not add ${symbol}: ${error.message}`, 'error');
-        return;
+    try {
+      setMessage(snapshotReadyForAdd(existingSnapshot) ? `Using cached data for ${symbol}...` : `Checking ${symbol}...`);
+      const job = await requestRefresh([symbol], activeList, {
+        mode: 'initial',
+        layers: ['quote', 'history', 'fundamentals'],
+        quiet: true,
+      });
+      const finishedJob = job?.id ? await waitForJob(job.id, 45000) : null;
+      if (!finishedJob || finishedJob.status !== 'done') {
+        throw new Error(finishedJob?.error || 'Ticker validation failed.');
       }
+      const { data: validatedSnapshot, error: validateError } = await supabase
+        .from('stock_snapshots')
+        .select('symbol,price,name,quote_status,history_status,fundamentals_status,inst_ownership')
+        .eq('symbol', symbol)
+        .maybeSingle();
+      if (validateError) throw validateError;
+      if (!snapshotReadyForAdd(validatedSnapshot)) {
+        throw new Error(`Could not fully fetch ${symbol}. Try again later.`);
+      }
+      setMessage(`Found ${validatedSnapshot.name || symbol}. Adding ${symbol}...`);
+    } catch (error) {
+      pendingInitialSymbolsRef.current.delete(symbol);
+      setMessage(`Could not add ${symbol}: ${error.message}`, 'error');
+      return;
     }
 
     const { error } = await supabase.from('watchlists').insert({

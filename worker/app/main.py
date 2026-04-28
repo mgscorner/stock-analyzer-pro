@@ -118,6 +118,29 @@ def refresh(
     if not symbols:
         raise HTTPException(status_code=400, detail="No valid symbols supplied.")
 
+    if request.mode == "initial" and len(symbols) == 1:
+        symbol = symbols[0]
+        existing = get_snapshot(service_client, symbol) or {}
+        if initial_snapshot_ready(existing):
+            job = create_refresh_job(
+                service_client,
+                user_id=user["id"],
+                email=user.get("email"),
+                symbols=[symbol],
+                watchlist_name=request.watchlist_name,
+            )
+            try:
+                mark_job(service_client, job["id"], "done")
+            except Exception as exc:
+                print(f"Could not mark job {job['id']} done: {exc}")
+            return RefreshResponse(
+                ok=True,
+                job_id=job["id"],
+                status="done",
+                symbols=[symbol],
+                message=f"Using current cached snapshot for {symbol}.",
+            )
+
     if request.mode in {"smart_visible", "visible_smart"}:
         plan = smart_visible_plan(symbols)
         due_symbols = unique_symbols(
@@ -379,6 +402,28 @@ def annual_series_has_year(snapshot: dict[str, Any], prefix: str, target_year: i
     return False
 
 
+def initial_snapshot_ready(snapshot: dict[str, Any]) -> bool:
+    if not snapshot:
+        return False
+    market_policy = market_policy_now(settings)
+    required_fields = [FIELD_PRICE, FIELD_HISTORY, FIELD_FUNDAMENTALS, FIELD_OWNERSHIP]
+    return all(
+        not is_layer_due(snapshot, field, market_policy.mode, market_policy.now)
+        for field in required_fields
+    )
+
+
+def initial_incomplete_reason(snapshot: dict[str, Any]) -> str:
+    market_policy = market_policy_now(settings)
+    missing: list[str] = []
+    for field in (FIELD_PRICE, FIELD_HISTORY, FIELD_FUNDAMENTALS, FIELD_OWNERSHIP):
+        if is_layer_due(snapshot, field, market_policy.mode, market_policy.now):
+            missing.append(field)
+    if not missing:
+        return "snapshot not complete"
+    return "missing or stale " + ", ".join(missing)
+
+
 def parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -411,12 +456,11 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
-            core_snapshot = fetch_snapshot(symbol, ["quote", "history"], logger, limiter)
-            upsert_snapshot(service_client, core_snapshot)
-            try:
-                refresh_visible_missing_fundamentals(symbol, logger, [])
-            except Exception as fundamentals_exc:
-                print(f"Initial fundamentals refresh deferred for {symbol}: {fundamentals_exc}")
+            full_snapshot = fetch_snapshot(symbol, ["quote", "history", "fundamentals"], logger, limiter)
+            upsert_snapshot(service_client, full_snapshot)
+            persisted = get_snapshot(service_client, symbol) or {}
+            if not initial_snapshot_ready(persisted):
+                raise ValueError(f"Initial fetch incomplete for {symbol}: {initial_incomplete_reason(persisted)}")
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
