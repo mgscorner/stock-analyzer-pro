@@ -490,6 +490,17 @@ def fetch_yfinance_major_holder_ownership(symbol: str, logger: MarketRequestLogg
     symbol = normalize_symbol(symbol)
     try:
         stock = yf.Ticker(symbol)
+        with logger.track(symbol, "fundamentals", "yfinance_institutional_holders"):
+            institutional_holders = stock.institutional_holders
+        if institutional_holders is not None and not institutional_holders.empty and "pctHeld" in institutional_holders.columns:
+            try:
+                total_pct = float(institutional_holders["pctHeld"].fillna(0).sum())
+            except Exception:
+                total_pct = 0.0
+            normalized_total = normalize_ownership_percent(total_pct)
+            if normalized_total > 0:
+                return normalized_total
+
         with logger.track(symbol, "fundamentals", "yfinance_major_holders"):
             major_holders = stock.major_holders
         if major_holders is None or major_holders.empty:
