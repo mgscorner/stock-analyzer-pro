@@ -660,7 +660,7 @@ def refresh_smart_visible_symbols(
 
     for symbol, layers in fundamentals_symbols.items():
         try:
-            refresh_visible_missing_fundamentals(symbol, logger, failures)
+            refresh_visible_missing_fundamentals(symbol, logger, limiter, failures)
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
@@ -675,7 +675,7 @@ def refresh_smart_visible_symbols(
             if non_fund_layers:
                 snapshot = fetch_snapshot(symbol, layers=non_fund_layers, logger=logger, limiter=limiter)
                 upsert_snapshot(service_client, snapshot)
-            refresh_visible_missing_fundamentals(symbol, logger, failures)
+            refresh_visible_missing_fundamentals(symbol, logger, limiter, failures)
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
@@ -688,36 +688,20 @@ def refresh_smart_visible_symbols(
 def refresh_visible_missing_fundamentals(
     symbol: str,
     logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
     failures: list[str],
 ) -> None:
     existing = get_snapshot(service_client, symbol) or {"symbol": symbol}
-    fundamentals = fetch_yfinance_fundamentals(symbol, logger)
-    annual_fields = fundamentals.get("annual_fields") or {}
-    if not annual_fields:
-        raise ValueError("No annual fundamentals returned by yfinance")
-
-    payload: dict[str, Any] = {
-        "symbol": symbol,
-        "fundamentals_status": "complete",
-        "fundamentals_updated_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    name = fundamentals.get("name")
-    if name and normalize_symbol(name) != symbol:
-        payload["name"] = name
-    market_cap = fundamentals.get("market_cap")
-    if market_cap:
-        payload["market_cap"] = market_cap
-    inst_ownership = fundamentals.get("inst_ownership")
-    if inst_ownership:
-        payload["inst_ownership"] = inst_ownership
-
-    for key, value in annual_fields.items():
-        if value is None:
-            continue
-        payload[key] = value
-
-    merged = merge_visible_fundamentals(existing, payload)
+    fundamentals_snapshot = fetch_snapshot(
+        symbol,
+        ["fundamentals"],
+        logger,
+        limiter,
+        force_fundamentals_fallbacks=True,
+    )
+    if fundamentals_snapshot.get("fundamentals_status") != "complete":
+        raise ValueError("No complete annual fundamentals returned by configured providers")
+    merged = merge_visible_fundamentals(existing, fundamentals_snapshot)
     upsert_snapshot(service_client, merged)
 
 

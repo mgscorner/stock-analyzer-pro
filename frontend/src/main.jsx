@@ -639,6 +639,9 @@ function Dashboard({ session }) {
       setMessage(`Basic plan limit: ${config.max_watchlists} watchlists.`, 'error');
       return;
     }
+    setRefreshJob(null);
+    setMessageState('');
+    setMessageType('info');
     setWatchlists([...watchlists, cleanName].sort());
     setActiveList(cleanName);
     setWatchlistData({});
@@ -806,7 +809,9 @@ function Dashboard({ session }) {
   const staleCount = rows.filter((row) => row.dataStatus !== 'OK').length;
   const visibleColumns = columns.filter(([key]) => !hiddenColumns.includes(key));
   const sortedWatchlistSymbols = Object.keys(watchlistData).sort();
-  const activeRefreshText = refreshJob && ['queued', 'running'].includes(refreshJob.status)
+  const activeRefreshText = refreshJob
+    && (!refreshJob.watchlistName || refreshJob.watchlistName === activeList)
+    && ['queued', 'running'].includes(refreshJob.status)
     ? `Refresh job ${refreshJob.status}: ${(refreshJob.symbols || []).join(', ')}`
     : '';
   const statusText = activeRefreshText || message || 'Ready.';
