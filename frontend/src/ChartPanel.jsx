@@ -45,7 +45,15 @@ function notifyAlertsChanged() {
   window.dispatchEvent(new CustomEvent('alerts-changed'));
 }
 
-export default function ChartPanel({ symbol, snapshot, userId, activeList, focusAlertId = '', onFocusAlertHandled = () => {} }) {
+export default function ChartPanel({
+  symbol,
+  snapshot,
+  userId,
+  activeList,
+  focusAlertId = '',
+  onFocusAlertHandled = () => {},
+  onAlertReactivated = () => {},
+}) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -406,6 +414,7 @@ export default function ChartPanel({ symbol, snapshot, userId, activeList, focus
     const next = sortAlerts(alerts.map((alert) => (alert.id === editingAlertId ? data : alert)));
     setAlerts(next);
     setAlertMessage('Alert reactivated.');
+    onAlertReactivated(editingAlertId);
     notifyAlertsChanged();
   }
 

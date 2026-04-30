@@ -106,6 +106,7 @@ def fetch_snapshot(
     layers: list[str] | None = None,
     logger: MarketRequestLogger | None = None,
     limiter: MarketRequestLimiter | None = None,
+    force_fundamentals_fallbacks: bool = False,
 ) -> dict[str, Any]:
     symbol = normalize_symbol(symbol)
     requested_layers = set(layers or ["quote", "history", "fundamentals"])
@@ -151,7 +152,12 @@ def fetch_snapshot(
 
     if "fundamentals" in requested_layers:
         try:
-            fundamentals = download_fundamentals(symbol, logger, limiter)
+            fundamentals = download_fundamentals(
+                symbol,
+                logger,
+                limiter,
+                force_all_providers=force_fundamentals_fallbacks,
+            )
             fundamental_fields = extract_fundamental_fields(fundamentals["financials"])
             annual_fields = fundamentals.get("annual_fields") or {}
             if annual_fields:
@@ -320,13 +326,19 @@ def download_history(symbol: str, logger: MarketRequestLogger, limiter: MarketRe
     return history
 
 
-def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: MarketRequestLimiter) -> dict[str, Any]:
+def download_fundamentals(
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+    force_all_providers: bool = False,
+) -> dict[str, Any]:
     cached = cache_get(_fundamentals_cache, symbol, FUNDAMENTALS_CACHE_TTL_SECONDS)
     if cached and fundamentals_cache_is_complete(cached):
         return cached
 
     provider_order = fundamentals_provider_order()
-    if not fundamentals_fallbacks_enabled():
+    use_all_providers = force_all_providers or fundamentals_fallbacks_enabled()
+    if not use_all_providers:
         provider_order = provider_order[:1]
     if not provider_order:
         provider_order = ["yfinance"]
@@ -345,7 +357,7 @@ def download_fundamentals(symbol: str, logger: MarketRequestLogger, limiter: Mar
             continue
         saw_provider = True
         result = merge_fundamentals_payload(result, partial)
-        if not fundamentals_fallbacks_enabled():
+        if not use_all_providers:
             break
 
     if not saw_provider:

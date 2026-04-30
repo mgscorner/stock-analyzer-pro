@@ -456,7 +456,13 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
-            full_snapshot = fetch_snapshot(symbol, ["quote", "history", "fundamentals"], logger, limiter)
+            full_snapshot = fetch_snapshot(
+                symbol,
+                ["quote", "history", "fundamentals"],
+                logger,
+                limiter,
+                force_fundamentals_fallbacks=True,
+            )
             upsert_snapshot(service_client, full_snapshot)
             persisted = get_snapshot(service_client, symbol) or {}
             if not initial_snapshot_ready(persisted):

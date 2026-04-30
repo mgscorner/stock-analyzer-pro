@@ -394,6 +394,9 @@ function Dashboard({ session }) {
   }
 
   async function loadWatchlistData(name) {
+    setRefreshJob(null);
+    setMessageState('');
+    setMessageType('info');
     const { data, error } = await supabase
       .from('watchlists')
       .select('*')
@@ -535,7 +538,9 @@ function Dashboard({ session }) {
     }
 
     const job = { id: body.job_id, status: body.status, symbols: body.symbols };
-    setRefreshJob(body.status === 'done' ? null : job);
+    if (options.trackGlobalJob !== false) {
+      setRefreshJob(body.status === 'done' ? null : job);
+    }
     if (!options.quiet) {
       setMessage(body.message || `Refreshing ${cleanSymbols.join(', ')}...`);
     }
@@ -583,14 +588,16 @@ function Dashboard({ session }) {
     return data.session?.access_token || session.access_token;
   }
 
-  async function waitForJob(jobId, timeoutMs = 60000) {
+  async function waitForJob(jobId, timeoutMs = 60000, options = {}) {
     const started = Date.now();
     setManualWaitJobId(jobId);
     while (Date.now() - started < timeoutMs) {
       await sleep(1000);
       const job = await loadRefreshJob(jobId);
       if (!job) return null;
-      setRefreshJob(job);
+      if (options.trackGlobalJob !== false) {
+        setRefreshJob(job);
+      }
       if (['done', 'failed', 'partial'].includes(job.status)) {
         setManualWaitJobId('');
         return job;
@@ -675,8 +682,9 @@ function Dashboard({ session }) {
         mode: 'initial',
         layers: ['quote', 'history', 'fundamentals'],
         quiet: true,
+        trackGlobalJob: false,
       });
-      const finishedJob = job?.id ? await waitForJob(job.id, 45000) : null;
+      const finishedJob = job?.id ? await waitForJob(job.id, 45000, { trackGlobalJob: false }) : null;
       if (!finishedJob || finishedJob.status !== 'done') {
         throw new Error(finishedJob?.error || 'Ticker validation failed.');
       }
@@ -835,6 +843,13 @@ function Dashboard({ session }) {
   const statusText = activeRefreshText || message || 'Ready.';
   const statusType = activeRefreshText ? 'info' : message ? messageType : 'idle';
   const unreadAlertCount = countUnreadAlertEvents(user.id, alertEvents);
+
+  async function handleAlertReactivated() {
+    markAlertEventsSeen(user.id, alertEvents);
+    setAlertEvents([...alertEvents]);
+    setFocusedAlertId('');
+    await loadAlertSidebar();
+  }
 
   function toggleColumn(key) {
     if (key === 'ticker') return;
@@ -1069,6 +1084,7 @@ function Dashboard({ session }) {
             activeList={activeList}
             focusAlertId={focusedAlertId}
             onFocusAlertHandled={() => setFocusedAlertId('')}
+            onAlertReactivated={handleAlertReactivated}
           />
         )}
         {feedbackOpen && (
@@ -1256,7 +1272,7 @@ function StockTable({ rows, columns: visibleColumns, sortConfig, setSortConfig, 
               key={row.ticker}
               onClick={() => onSelectTicker(row.ticker)}
               className={[
-                ['Update Failed', 'Needs Cache', 'Partial', 'Missing Fundamentals'].includes(row.dataStatus) ? 'failed-row' : '',
+                ['Update Failed', 'Needs Cache', 'Missing Fundamentals'].includes(row.dataStatus) ? 'failed-row' : '',
                 selectedTicker === row.ticker ? 'selected-row' : '',
               ].filter(Boolean).join(' ')}
             >
