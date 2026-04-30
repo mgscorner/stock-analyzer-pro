@@ -251,6 +251,7 @@ function Dashboard({ session }) {
   const [sidebarFolds, setSidebarFolds] = useState(() => loadSidebarFolds(user.id));
   const autoPriceRefreshRef = useRef('');
   const pendingInitialSymbolsRef = useRef(new Set());
+  const activeListRef = useRef('');
 
   useEffect(() => {
     loadConfig();
@@ -320,6 +321,10 @@ function Dashboard({ session }) {
   }, [sidebarFolds, user.id]);
 
   useEffect(() => {
+    activeListRef.current = activeList;
+  }, [activeList]);
+
+  useEffect(() => {
     if (!message) return undefined;
     const timer = window.setTimeout(() => {
       setMessageState('');
@@ -343,11 +348,17 @@ function Dashboard({ session }) {
   useEffect(() => {
     if (!refreshJob?.id) return undefined;
     if (refreshJob.id === manualWaitJobId) return undefined;
+    if (refreshJob.watchlistName && refreshJob.watchlistName !== activeList) return undefined;
 
     let stopped = false;
+    const jobWatchlist = refreshJob.watchlistName || activeList;
     const timer = window.setInterval(async () => {
       const job = await loadRefreshJob(refreshJob.id);
       if (stopped || !job) return;
+      if (activeListRef.current !== jobWatchlist) {
+        window.clearInterval(timer);
+        return;
+      }
 
       setRefreshJob(job);
       await loadSnapshots(Object.keys(watchlistData));
@@ -537,7 +548,7 @@ function Dashboard({ session }) {
       throw new Error(body.detail || body.error || 'Refresh request failed.');
     }
 
-    const job = { id: body.job_id, status: body.status, symbols: body.symbols };
+    const job = { id: body.job_id, status: body.status, symbols: body.symbols, watchlistName: watchlistName || '' };
     if (options.trackGlobalJob !== false) {
       setRefreshJob(body.status === 'done' ? null : job);
     }
@@ -635,17 +646,6 @@ function Dashboard({ session }) {
     setMessage('');
   }
 
-  function snapshotReadyForAdd(snapshot) {
-    return Boolean(
-      snapshot
-      && Number(snapshot.price || 0) > 0
-      && snapshot.quote_status === 'complete'
-      && snapshot.history_status === 'complete'
-      && snapshot.fundamentals_status === 'complete'
-      && Number(snapshot.inst_ownership || 0) > 0
-    );
-  }
-
   async function addTicker(event) {
     event.preventDefault();
     const symbol = normalizeSymbol(newTicker);
@@ -662,64 +662,33 @@ function Dashboard({ session }) {
       return;
     }
 
-    const { data: existingSnapshot, error: snapshotError } = await supabase
-      .from('stock_snapshots')
-      .select('symbol,price,name,quote_status,history_status,fundamentals_status,inst_ownership')
-      .eq('symbol', symbol)
-      .maybeSingle();
-
-    if (snapshotError) {
-      setMessage(snapshotError.message, 'error');
-      return;
-    }
-
     const nextWatchlistData = { ...watchlistData, [symbol]: '' };
-    pendingInitialSymbolsRef.current.add(symbol);
-
     try {
-      setMessage(snapshotReadyForAdd(existingSnapshot) ? `Using cached data for ${symbol}...` : `Checking ${symbol}...`);
-      const job = await requestRefresh([symbol], activeList, {
-        mode: 'initial',
-        layers: ['quote', 'history', 'fundamentals'],
-        quiet: true,
-        trackGlobalJob: false,
+      setMessage(`Checking ${symbol}...`);
+      const accessToken = await currentAccessToken();
+      const response = await fetch(`${workerApiUrl}/add-ticker`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symbol,
+          watchlist_name: activeList,
+        }),
       });
-      const finishedJob = job?.id ? await waitForJob(job.id, 45000, { trackGlobalJob: false }) : null;
-      if (!finishedJob || finishedJob.status !== 'done') {
-        throw new Error(finishedJob?.error || 'Ticker validation failed.');
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.ok) {
+        throw new Error(body.detail || body.error || `Could not fully fetch ${symbol}.`);
       }
-      const { data: validatedSnapshot, error: validateError } = await supabase
-        .from('stock_snapshots')
-        .select('symbol,price,name,quote_status,history_status,fundamentals_status,inst_ownership')
-        .eq('symbol', symbol)
-        .maybeSingle();
-      if (validateError) throw validateError;
-      if (!snapshotReadyForAdd(validatedSnapshot)) {
-        throw new Error(`Could not fully fetch ${symbol}. Try again later.`);
-      }
-      setMessage(`Found ${validatedSnapshot.name || symbol}. Adding ${symbol}...`);
+      setMessage(`Found ${body.name || symbol}. Adding ${symbol}...`);
     } catch (error) {
-      pendingInitialSymbolsRef.current.delete(symbol);
       setMessage(`Could not add ${symbol}: ${error.message}`, 'error');
-      return;
-    }
-
-    const { error } = await supabase.from('watchlists').insert({
-      user_id: user.id,
-      ticker_symbol: symbol,
-      comment: '',
-      watchlist_name: activeList,
-    });
-
-    if (error) {
-      pendingInitialSymbolsRef.current.delete(symbol);
-      setMessage(error.message, 'error');
       return;
     }
 
     setWatchlistData(nextWatchlistData);
     const loadedSnapshots = await loadSnapshots(Object.keys(nextWatchlistData));
-    pendingInitialSymbolsRef.current.delete(symbol);
     setChartTicker(symbol);
     setNewTicker('');
     const addedName = loadedSnapshots?.[symbol]?.name || symbol;

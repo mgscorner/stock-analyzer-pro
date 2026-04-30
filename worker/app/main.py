@@ -83,6 +83,18 @@ class ActivityResponse(BaseModel):
     tracked_watchlists: int
 
 
+class AddTickerRequest(BaseModel):
+    symbol: str
+    watchlist_name: str
+
+
+class AddTickerResponse(BaseModel):
+    ok: bool
+    symbol: str
+    name: str
+    message: str | None = None
+
+
 class IntradayChartResponse(BaseModel):
     ok: bool
     symbol: str
@@ -220,6 +232,75 @@ def record_activity(
         watchlists.append(active_watchlist)
     upsert_watchlist_activity(service_client, user["id"], watchlists, active_watchlist)
     return ActivityResponse(ok=True, tracked_watchlists=len(watchlists))
+
+
+@app.post("/add-ticker", response_model=AddTickerResponse)
+def add_ticker(
+    request: AddTickerRequest,
+    user: Annotated[dict, Depends(current_user)],
+) -> AddTickerResponse:
+    symbol = normalize_symbol(request.symbol)
+    watchlist_name = str(request.watchlist_name or "").strip()
+    if not symbol or not SYMBOL_RE.match(symbol):
+        raise HTTPException(status_code=400, detail="Invalid symbol.")
+    if not watchlist_name:
+        raise HTTPException(status_code=400, detail="Missing watchlist name.")
+
+    duplicate = service_client.table("watchlists").select("ticker_symbol").eq("user_id", user["id"]).eq(
+        "watchlist_name", watchlist_name
+    ).eq("ticker_symbol", symbol).maybe_single().execute()
+    if duplicate.data:
+        raise HTTPException(status_code=409, detail=f"{symbol} is already in {watchlist_name}.")
+
+    existing = get_snapshot(service_client, symbol) or {}
+    if not initial_snapshot_ready(existing):
+        logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=f"add:{symbol}")
+        limiter = MarketRequestLimiter(
+            enabled=settings.enable_request_limiter,
+            quote_min_interval_ms=settings.quote_min_interval_ms,
+            history_min_interval_ms=settings.history_min_interval_ms,
+            fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
+        )
+        try:
+            full_snapshot = fetch_snapshot(
+                symbol,
+                ["quote", "history", "fundamentals"],
+                logger,
+                limiter,
+                force_fundamentals_fallbacks=True,
+            )
+            upsert_snapshot(service_client, full_snapshot)
+            try:
+                insert_market_request_logs(service_client, logger.events)
+            except Exception as exc:
+                print(f"Could not write market request logs for add-ticker {symbol}: {exc}")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not fully fetch {symbol}: {exc}") from exc
+
+    persisted = get_snapshot(service_client, symbol) or {}
+    if not initial_snapshot_ready(persisted):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not fully fetch {symbol}: {initial_incomplete_reason(persisted)}",
+        )
+
+    insert_result = service_client.table("watchlists").insert(
+        {
+            "user_id": user["id"],
+            "ticker_symbol": symbol,
+            "comment": "",
+            "watchlist_name": watchlist_name,
+        }
+    ).execute()
+    if not (insert_result.data or []):
+        raise HTTPException(status_code=500, detail="Ticker insert failed.")
+
+    return AddTickerResponse(
+        ok=True,
+        symbol=symbol,
+        name=str(persisted.get("name") or symbol),
+        message=f"Added {symbol}.",
+    )
 
 
 @app.get("/chart/{symbol}/intraday", response_model=IntradayChartResponse)
