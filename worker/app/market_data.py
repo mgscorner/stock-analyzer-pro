@@ -495,15 +495,32 @@ def fetch_yfinance_fundamentals(symbol: str, logger: MarketRequestLogger) -> dic
 
 def merge_fundamentals_payload(target: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
     merged = {**target}
-    copy_if_meaningful(merged, source, "name")
-    copy_if_positive(merged, source, "market_cap")
-    copy_if_positive(merged, source, "inst_ownership")
+    copy_if_meaningful_local(merged, source, "name")
+    copy_if_positive_local(merged, source, "market_cap")
+    copy_if_positive_local(merged, source, "inst_ownership")
     if isinstance(source.get("annual_fields"), dict) and source["annual_fields"]:
         merged["annual_fields"] = {**(merged.get("annual_fields") or {}), **source["annual_fields"]}
     if isinstance(source.get("financials"), pd.DataFrame) and not source["financials"].empty:
         if not isinstance(merged.get("financials"), pd.DataFrame) or merged["financials"].empty:
             merged["financials"] = source["financials"]
     return merged
+
+
+def copy_if_meaningful_local(target: dict[str, Any], source: dict[str, Any], key: str) -> None:
+    value = source.get(key)
+    if value not in (None, "", "N/A"):
+        if key == "name" and normalize_text(value) == normalize_text(source.get("symbol")):
+            return
+        target[key] = value
+
+
+def copy_if_positive_local(target: dict[str, Any], source: dict[str, Any], key: str) -> None:
+    try:
+        value = float(source.get(key) or 0)
+    except Exception:
+        value = 0
+    if value > 0:
+        target[key] = source[key]
 
 
 def fundamentals_fallbacks_enabled() -> bool:
