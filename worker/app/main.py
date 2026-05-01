@@ -249,7 +249,8 @@ def add_ticker(
     duplicate = service_client.table("watchlists").select("ticker_symbol").eq("user_id", user["id"]).eq(
         "watchlist_name", watchlist_name
     ).eq("ticker_symbol", symbol).maybe_single().execute()
-    if duplicate.data:
+    duplicate_data = getattr(duplicate, "data", None) if duplicate is not None else None
+    if duplicate_data:
         raise HTTPException(status_code=409, detail=f"{symbol} is already in {watchlist_name}.")
 
     existing = get_snapshot(service_client, symbol) or {}
