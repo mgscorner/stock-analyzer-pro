@@ -193,6 +193,75 @@ def fetch_snapshot(
     return snapshot
 
 
+def fetch_full_snapshot_for_add(
+    symbol: str,
+    logger: MarketRequestLogger | None = None,
+    limiter: MarketRequestLimiter | None = None,
+) -> dict[str, Any]:
+    symbol = normalize_symbol(symbol)
+    logger = logger or MarketRequestLogger(enabled=False)
+    limiter = limiter or MarketRequestLimiter(enabled=False)
+
+    snapshot: dict[str, Any] = {"symbol": symbol}
+
+    quote = download_quote(symbol, logger, limiter)
+    snapshot.update(quote)
+    snapshot["quote_status"] = "complete"
+    snapshot["price_updated_at"] = iso_now()
+
+    history = download_history(symbol, logger, limiter)
+    if history.empty:
+        raise ValueError("No price history returned")
+    snapshot.update(extract_close_baselines(history))
+    snapshot["history_data"] = history_to_records(history)
+    snapshot["history_status"] = "complete"
+    snapshot["history_updated_at"] = iso_now()
+
+    if number_or_zero(snapshot.get("price")) <= 0:
+        snapshot["price"] = latest_close(history)
+        snapshot["price_updated_at"] = iso_now()
+    if number_or_zero(snapshot.get("price")) <= 0:
+        raise ValueError(f"No valid market data found for {symbol}. Check the ticker symbol.")
+
+    fundamentals = download_fundamentals(
+        symbol,
+        logger,
+        limiter,
+        force_all_providers=True,
+    )
+    fundamental_fields = extract_fundamental_fields(fundamentals["financials"])
+    annual_fields = fundamentals.get("annual_fields") or {}
+    if annual_fields:
+        fundamental_fields.update(annual_fields)
+    fundamentals_name = fundamentals.get("name")
+    snapshot.update(
+        {
+            "name": (
+                fundamentals_name
+                if fundamentals_name and normalize_symbol(fundamentals_name) != symbol
+                else snapshot.get("name") or symbol
+            ),
+            "market_cap": fundamentals.get("market_cap") or snapshot.get("market_cap") or 0,
+            "inst_ownership": fundamentals.get("inst_ownership") or 0,
+        }
+    )
+    snapshot.update(fundamental_fields)
+    snapshot["fundamentals_updated_at"] = iso_now()
+
+    if not fundamentals_has_full_annual_series(snapshot):
+        raise ValueError("No complete annual fundamentals returned by configured providers")
+    if number_or_zero(snapshot.get("inst_ownership")) <= 0:
+        raise ValueError("No institutional ownership returned by configured providers")
+
+    snapshot["fundamentals_status"] = "complete"
+    snapshot = recalc_performance(snapshot)
+    snapshot["snapshot_status"] = "complete"
+    snapshot["last_error"] = None
+    snapshot["last_error_at"] = None
+    snapshot["updated_at"] = iso_now()
+    return snapshot
+
+
 def batch_quote_snapshots(
     symbols: list[str],
     existing_snapshots: dict[str, dict[str, Any]],

@@ -12,9 +12,9 @@ from pydantic import BaseModel, Field
 from .market_debug import MarketRequestLogger
 from .market_data import (
     batch_quote_snapshots,
+    fetch_full_snapshot_for_add,
     fetch_snapshot,
     fetch_recent_intraday_bars,
-    fetch_yfinance_fundamentals,
     normalize_symbol,
 )
 from .market_policy import (
@@ -133,7 +133,7 @@ def refresh(
     if request.mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         existing = get_snapshot(service_client, symbol) or {}
-        if initial_snapshot_ready(existing):
+        if add_snapshot_usable(existing):
             job = create_refresh_job(
                 service_client,
                 user_id=user["id"],
@@ -253,7 +253,7 @@ def add_ticker(
         raise HTTPException(status_code=409, detail=f"{symbol} is already in {watchlist_name}.")
 
     existing = get_snapshot(service_client, symbol) or {}
-    if not initial_snapshot_ready(existing):
+    if not add_snapshot_usable(existing):
         logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=f"add:{symbol}")
         limiter = MarketRequestLimiter(
             enabled=settings.enable_request_limiter,
@@ -262,13 +262,7 @@ def add_ticker(
             fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
         )
         try:
-            full_snapshot = fetch_snapshot(
-                symbol,
-                ["quote", "history", "fundamentals"],
-                logger,
-                limiter,
-                force_fundamentals_fallbacks=True,
-            )
+            full_snapshot = fetch_full_snapshot_for_add(symbol, logger, limiter)
             upsert_snapshot(service_client, full_snapshot)
             try:
                 insert_market_request_logs(service_client, logger.events)
@@ -278,10 +272,10 @@ def add_ticker(
             raise HTTPException(status_code=400, detail=f"Could not fully fetch {symbol}: {exc}") from exc
 
     persisted = get_snapshot(service_client, symbol) or {}
-    if not initial_snapshot_ready(persisted):
+    if not add_snapshot_usable(persisted):
         raise HTTPException(
             status_code=400,
-            detail=f"Could not fully fetch {symbol}: {initial_incomplete_reason(persisted)}",
+            detail=f"Could not fully fetch {symbol}: {add_incomplete_reason(persisted)}",
         )
 
     insert_result = service_client.table("watchlists").insert(
@@ -505,6 +499,51 @@ def initial_incomplete_reason(snapshot: dict[str, Any]) -> str:
     return "missing or stale " + ", ".join(missing)
 
 
+def add_snapshot_complete(snapshot: dict[str, Any]) -> bool:
+    return (
+        has_positive_price(snapshot)
+        and bool(snapshot.get("history_data"))
+        and not annual_fundamentals_missing(snapshot)
+        and has_positive_ownership(snapshot)
+    )
+
+
+def add_snapshot_fresh(snapshot: dict[str, Any]) -> bool:
+    if not snapshot:
+        return False
+    market_policy = market_policy_now(settings)
+    now = market_policy.now
+    return not (
+        field_is_stale(parse_datetime(snapshot.get("price_updated_at")), ttl_minutes(settings, FIELD_PRICE, market_policy.mode), now)
+        or field_is_stale(parse_datetime(snapshot.get("history_updated_at")), ttl_minutes(settings, FIELD_HISTORY, market_policy.mode), now)
+        or field_is_stale(parse_datetime(snapshot.get("fundamentals_updated_at")), ttl_minutes(settings, FIELD_FUNDAMENTALS, market_policy.mode), now)
+    )
+
+
+def add_snapshot_usable(snapshot: dict[str, Any]) -> bool:
+    return add_snapshot_complete(snapshot) and add_snapshot_fresh(snapshot)
+
+
+def add_incomplete_reason(snapshot: dict[str, Any]) -> str:
+    if not snapshot:
+        return "snapshot missing"
+    reasons: list[str] = []
+    if not has_positive_price(snapshot):
+        reasons.append("price")
+    if not snapshot.get("history_data"):
+        reasons.append("history")
+    if annual_fundamentals_missing(snapshot):
+        reasons.append("annual fundamentals")
+    if not has_positive_ownership(snapshot):
+        reasons.append("institutional ownership")
+    if not reasons:
+        if not add_snapshot_fresh(snapshot):
+            reasons.append("stale cached snapshot")
+        else:
+            reasons.append("incomplete snapshot")
+    return "missing or stale " + ", ".join(reasons)
+
+
 def parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -537,17 +576,11 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
-            full_snapshot = fetch_snapshot(
-                symbol,
-                ["quote", "history", "fundamentals"],
-                logger,
-                limiter,
-                force_fundamentals_fallbacks=True,
-            )
+            full_snapshot = fetch_full_snapshot_for_add(symbol, logger, limiter)
             upsert_snapshot(service_client, full_snapshot)
             persisted = get_snapshot(service_client, symbol) or {}
-            if not initial_snapshot_ready(persisted):
-                raise ValueError(f"Initial fetch incomplete for {symbol}: {initial_incomplete_reason(persisted)}")
+            if not add_snapshot_usable(persisted):
+                raise ValueError(f"Initial fetch incomplete for {symbol}: {add_incomplete_reason(persisted)}")
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
