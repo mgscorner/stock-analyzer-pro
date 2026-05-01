@@ -12,22 +12,25 @@ from pydantic import BaseModel, Field
 from .market_debug import MarketRequestLogger
 from .market_data import (
     batch_quote_snapshots,
-    fetch_full_snapshot_for_add,
     fetch_snapshot,
     fetch_recent_intraday_bars,
     normalize_symbol,
 )
 from .market_policy import (
-    FIELD_FUNDAMENTALS,
-    FIELD_HISTORY,
-    FIELD_OWNERSHIP,
-    FIELD_PRICE,
-    field_is_stale,
     market_policy_now,
-    ttl_minutes,
 )
 from .rate_limit import MarketRequestLimiter
 from .settings import get_settings
+from .snapshot_rules import (
+    add_incomplete_reason as add_incomplete_reason_rule,
+    add_snapshot_complete as add_snapshot_complete_rule,
+    add_snapshot_fresh as add_snapshot_fresh_rule,
+    add_snapshot_usable as add_snapshot_usable_rule,
+    annual_fundamentals_missing as annual_fundamentals_missing_rule,
+    due_layers_for_visible as due_layers_for_visible_rule,
+    is_layer_due as is_layer_due_rule,
+    parse_datetime,
+)
 from .supabase_db import (
     create_refresh_job,
     get_snapshot,
@@ -39,6 +42,12 @@ from .supabase_db import (
     mark_symbol_failed,
     upsert_watchlist_activity,
     upsert_snapshot,
+)
+from .use_cases import (
+    add_ticker_use_case,
+    ensure_complete_snapshot_for_add,
+    refresh_smart_visible_symbols_use_case,
+    refresh_visible_missing_fundamentals_use_case,
 )
 
 
@@ -133,7 +142,7 @@ def refresh(
     if request.mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         existing = get_snapshot(service_client, symbol) or {}
-        if add_snapshot_usable(existing):
+        if add_snapshot_usable_rule(existing, settings):
             job = create_refresh_job(
                 service_client,
                 user_id=user["id"],
@@ -245,57 +254,36 @@ def add_ticker(
         raise HTTPException(status_code=400, detail="Invalid symbol.")
     if not watchlist_name:
         raise HTTPException(status_code=400, detail="Missing watchlist name.")
-
-    duplicate = service_client.table("watchlists").select("ticker_symbol").eq("user_id", user["id"]).eq(
-        "watchlist_name", watchlist_name
-    ).eq("ticker_symbol", symbol).maybe_single().execute()
-    duplicate_data = getattr(duplicate, "data", None) if duplicate is not None else None
-    if duplicate_data:
-        raise HTTPException(status_code=409, detail=f"{symbol} is already in {watchlist_name}.")
-
-    existing = get_snapshot(service_client, symbol) or {}
-    if not add_snapshot_usable(existing):
-        logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=f"add:{symbol}")
-        limiter = MarketRequestLimiter(
-            enabled=settings.enable_request_limiter,
-            quote_min_interval_ms=settings.quote_min_interval_ms,
-            history_min_interval_ms=settings.history_min_interval_ms,
-            fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
-        )
-        try:
-            full_snapshot = fetch_full_snapshot_for_add(symbol, logger, limiter)
-            upsert_snapshot(service_client, full_snapshot)
-            try:
-                insert_market_request_logs(service_client, logger.events)
-            except Exception as exc:
-                print(f"Could not write market request logs for add-ticker {symbol}: {exc}")
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Could not fully fetch {symbol}: {exc}") from exc
-
-    persisted = get_snapshot(service_client, symbol) or {}
-    if not add_snapshot_usable(persisted):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not fully fetch {symbol}: {add_incomplete_reason(persisted)}",
-        )
-
-    insert_result = service_client.table("watchlists").insert(
-        {
-            "user_id": user["id"],
-            "ticker_symbol": symbol,
-            "comment": "",
-            "watchlist_name": watchlist_name,
-        }
-    ).execute()
-    if not (insert_result.data or []):
-        raise HTTPException(status_code=500, detail="Ticker insert failed.")
-
-    return AddTickerResponse(
-        ok=True,
-        symbol=symbol,
-        name=str(persisted.get("name") or symbol),
-        message=f"Added {symbol}.",
+    logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=f"add:{symbol}")
+    limiter = MarketRequestLimiter(
+        enabled=settings.enable_request_limiter,
+        quote_min_interval_ms=settings.quote_min_interval_ms,
+        history_min_interval_ms=settings.history_min_interval_ms,
+        fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
     )
+    try:
+        snapshot = add_ticker_use_case(
+            service_client,
+            settings,
+            user["id"],
+            watchlist_name,
+            symbol,
+            logger,
+            limiter,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        persisted = get_snapshot(service_client, symbol) or {}
+        detail = str(exc).strip() or add_incomplete_reason_rule(persisted, settings)
+        raise HTTPException(status_code=400, detail=f"Could not fully fetch {symbol}: {detail}") from exc
+    finally:
+        try:
+            insert_market_request_logs(service_client, logger.events)
+        except Exception as log_exc:
+            print(f"Could not write market request logs for add-ticker {symbol}: {log_exc}")
+
+    return AddTickerResponse(ok=True, symbol=symbol, name=str(snapshot.get("name") or symbol), message=f"Added {symbol}.")
 
 
 @app.get("/chart/{symbol}/intraday", response_model=IntradayChartResponse)
@@ -414,46 +402,15 @@ def unique_symbols(symbols: list[str]) -> list[str]:
 
 
 def due_layers_for_visible(snapshot: dict[str, Any], mode: str, now: datetime) -> list[str]:
-    layers: list[str] = []
-
-    if is_layer_due(snapshot, FIELD_PRICE, mode, now):
-        layers.append(FIELD_PRICE)
-    if is_layer_due(snapshot, FIELD_HISTORY, mode, now):
-        layers.append(FIELD_HISTORY)
-    if is_layer_due(snapshot, FIELD_FUNDAMENTALS, mode, now):
-        layers.append(FIELD_FUNDAMENTALS)
-    if is_layer_due(snapshot, FIELD_OWNERSHIP, mode, now):
-        if FIELD_FUNDAMENTALS not in layers:
-            layers.append(FIELD_FUNDAMENTALS)
-    return layers
+    return due_layers_for_visible_rule(snapshot, settings, now)
 
 
 def is_layer_due(snapshot: dict[str, Any], field: str, mode: str, now: datetime) -> bool:
-    if field == FIELD_PRICE:
-        if not has_positive_price(snapshot):
-            return True
-        ttl = ttl_minutes(settings, FIELD_PRICE, mode)
-        return field_is_stale(parse_datetime(snapshot.get("price_updated_at")), ttl, now)
-    if field == FIELD_HISTORY:
-        ttl = ttl_minutes(settings, FIELD_HISTORY, mode)
-        return field_is_stale(parse_datetime(snapshot.get("history_updated_at")), ttl, now)
-    if field == FIELD_FUNDAMENTALS:
-        ttl = ttl_minutes(settings, FIELD_FUNDAMENTALS, mode)
-        return field_is_stale(parse_datetime(snapshot.get("fundamentals_updated_at")), ttl, now) or annual_fundamentals_missing(snapshot)
-    if field == FIELD_OWNERSHIP:
-        ttl = ttl_minutes(settings, FIELD_OWNERSHIP, mode)
-        return field_is_stale(parse_datetime(snapshot.get("fundamentals_updated_at")), ttl, now) or not has_positive_ownership(snapshot)
-    return False
+    return is_layer_due_rule(snapshot, field, settings, now)
 
 
 def annual_fundamentals_missing(snapshot: dict[str, Any]) -> bool:
-    market_years = [market_policy_now(settings).now.year - offset for offset in range(1, 5)]
-    for target_year in market_years:
-        if not annual_series_has_year(snapshot, "revenue", target_year):
-            return True
-        if not annual_series_has_year(snapshot, "profit", target_year):
-            return True
-    return False
+    return annual_fundamentals_missing_rule(snapshot, settings)
 
 
 def is_positive_number(value: Any) -> bool:
@@ -479,70 +436,27 @@ def annual_series_has_year(snapshot: dict[str, Any], prefix: str, target_year: i
 
 
 def initial_snapshot_ready(snapshot: dict[str, Any]) -> bool:
-    if not snapshot:
-        return False
-    market_policy = market_policy_now(settings)
-    required_fields = [FIELD_PRICE, FIELD_HISTORY, FIELD_FUNDAMENTALS, FIELD_OWNERSHIP]
-    return all(
-        not is_layer_due(snapshot, field, market_policy.mode, market_policy.now)
-        for field in required_fields
-    )
+    return add_snapshot_usable_rule(snapshot, settings)
 
 
 def initial_incomplete_reason(snapshot: dict[str, Any]) -> str:
-    market_policy = market_policy_now(settings)
-    missing: list[str] = []
-    for field in (FIELD_PRICE, FIELD_HISTORY, FIELD_FUNDAMENTALS, FIELD_OWNERSHIP):
-        if is_layer_due(snapshot, field, market_policy.mode, market_policy.now):
-            missing.append(field)
-    if not missing:
-        return "snapshot not complete"
-    return "missing or stale " + ", ".join(missing)
+    return add_incomplete_reason_rule(snapshot, settings)
 
 
 def add_snapshot_complete(snapshot: dict[str, Any]) -> bool:
-    return (
-        has_positive_price(snapshot)
-        and bool(snapshot.get("history_data"))
-        and not annual_fundamentals_missing(snapshot)
-        and has_positive_ownership(snapshot)
-    )
+    return add_snapshot_complete_rule(snapshot, settings)
 
 
 def add_snapshot_fresh(snapshot: dict[str, Any]) -> bool:
-    if not snapshot:
-        return False
-    market_policy = market_policy_now(settings)
-    now = market_policy.now
-    return not (
-        field_is_stale(parse_datetime(snapshot.get("price_updated_at")), ttl_minutes(settings, FIELD_PRICE, market_policy.mode), now)
-        or field_is_stale(parse_datetime(snapshot.get("history_updated_at")), ttl_minutes(settings, FIELD_HISTORY, market_policy.mode), now)
-        or field_is_stale(parse_datetime(snapshot.get("fundamentals_updated_at")), ttl_minutes(settings, FIELD_FUNDAMENTALS, market_policy.mode), now)
-    )
+    return add_snapshot_fresh_rule(snapshot, settings)
 
 
 def add_snapshot_usable(snapshot: dict[str, Any]) -> bool:
-    return add_snapshot_complete(snapshot) and add_snapshot_fresh(snapshot)
+    return add_snapshot_usable_rule(snapshot, settings)
 
 
 def add_incomplete_reason(snapshot: dict[str, Any]) -> str:
-    if not snapshot:
-        return "snapshot missing"
-    reasons: list[str] = []
-    if not has_positive_price(snapshot):
-        reasons.append("price")
-    if not snapshot.get("history_data"):
-        reasons.append("history")
-    if annual_fundamentals_missing(snapshot):
-        reasons.append("annual fundamentals")
-    if not has_positive_ownership(snapshot):
-        reasons.append("institutional ownership")
-    if not reasons:
-        if not add_snapshot_fresh(snapshot):
-            reasons.append("stale cached snapshot")
-        else:
-            reasons.append("incomplete snapshot")
-    return "missing or stale " + ", ".join(reasons)
+    return add_incomplete_reason_rule(snapshot, settings)
 
 
 def parse_datetime(value: Any) -> datetime | None:
@@ -577,11 +491,7 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
-            full_snapshot = fetch_full_snapshot_for_add(symbol, logger, limiter)
-            upsert_snapshot(service_client, full_snapshot)
-            persisted = get_snapshot(service_client, symbol) or {}
-            if not add_snapshot_usable(persisted):
-                raise ValueError(f"Initial fetch incomplete for {symbol}: {add_incomplete_reason(persisted)}")
+            ensure_complete_snapshot_for_add(service_client, settings, symbol, logger, limiter)
         except Exception as exc:
             message = str(exc)
             failures.append(f"{symbol}: {message}")
@@ -642,81 +552,7 @@ def refresh_smart_visible_symbols(
     limiter: MarketRequestLimiter,
     failures: list[str],
 ) -> None:
-    quote_only_symbols: list[str] = []
-    history_symbols: dict[str, list[str]] = {}
-    fundamentals_symbols: dict[str, list[str]] = {}
-    combined_symbols: dict[str, list[str]] = {}
-
-    market_policy = market_policy_now(settings)
-
-    for symbol in symbols:
-        snapshot = get_snapshot(service_client, symbol) or {}
-        layers = due_layers_for_visible(snapshot, market_policy.mode, market_policy.now)
-        if not layers:
-            continue
-        if layers == [FIELD_PRICE]:
-            quote_only_symbols.append(symbol)
-        elif layers == [FIELD_HISTORY]:
-            history_symbols[symbol] = layers
-        elif layers == [FIELD_FUNDAMENTALS]:
-            fundamentals_symbols[symbol] = layers
-        else:
-            combined_symbols[symbol] = layers
-
-    if quote_only_symbols:
-        try:
-            existing = {symbol: get_snapshot(service_client, symbol) or {} for symbol in quote_only_symbols}
-            for snapshot in batch_quote_snapshots(
-                quote_only_symbols,
-                existing,
-                logger,
-                limiter,
-                fast_lane=settings.enable_quote_fast_lane,
-                fallback_spacing_seconds=0.0,
-            ):
-                if snapshot.get("quote_status") == "error":
-                    failures.append(f"{snapshot['symbol']}: {snapshot.get('quote_last_error', 'quote failed')}")
-                upsert_snapshot(service_client, snapshot)
-        except Exception as exc:
-            failures.append(f"batch quote: {exc}")
-
-    for symbol, layers in history_symbols.items():
-        try:
-            snapshot = fetch_snapshot(symbol, layers=layers, logger=logger, limiter=limiter)
-            upsert_snapshot(service_client, snapshot)
-        except Exception as exc:
-            message = str(exc)
-            failures.append(f"{symbol}: {message}")
-            try:
-                mark_symbol_failed(service_client, symbol, message)
-            except Exception as mark_exc:
-                failures.append(f"{symbol}: could not record failure: {mark_exc}")
-
-    for symbol, layers in fundamentals_symbols.items():
-        try:
-            refresh_visible_missing_fundamentals(symbol, logger, limiter, failures)
-        except Exception as exc:
-            message = str(exc)
-            failures.append(f"{symbol}: {message}")
-            try:
-                mark_symbol_failed(service_client, symbol, message)
-            except Exception as mark_exc:
-                failures.append(f"{symbol}: could not record failure: {mark_exc}")
-
-    for symbol, layers in combined_symbols.items():
-        non_fund_layers = [layer for layer in layers if layer != FIELD_FUNDAMENTALS]
-        try:
-            if non_fund_layers:
-                snapshot = fetch_snapshot(symbol, layers=non_fund_layers, logger=logger, limiter=limiter)
-                upsert_snapshot(service_client, snapshot)
-            refresh_visible_missing_fundamentals(symbol, logger, limiter, failures)
-        except Exception as exc:
-            message = str(exc)
-            failures.append(f"{symbol}: {message}")
-            try:
-                mark_symbol_failed(service_client, symbol, message)
-            except Exception as mark_exc:
-                failures.append(f"{symbol}: could not record failure: {mark_exc}")
+    refresh_smart_visible_symbols_use_case(service_client, settings, symbols, logger, limiter, failures)
 
 
 def refresh_visible_missing_fundamentals(
@@ -725,18 +561,7 @@ def refresh_visible_missing_fundamentals(
     limiter: MarketRequestLimiter,
     failures: list[str],
 ) -> None:
-    existing = get_snapshot(service_client, symbol) or {"symbol": symbol}
-    fundamentals_snapshot = fetch_snapshot(
-        symbol,
-        ["fundamentals"],
-        logger,
-        limiter,
-        force_fundamentals_fallbacks=True,
-    )
-    if fundamentals_snapshot.get("fundamentals_status") != "complete":
-        raise ValueError("No complete annual fundamentals returned by configured providers")
-    merged = merge_visible_fundamentals(existing, fundamentals_snapshot)
-    upsert_snapshot(service_client, merged)
+    refresh_visible_missing_fundamentals_use_case(service_client, settings, symbol, logger, limiter)
 
 
 def merge_visible_fundamentals(existing: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
