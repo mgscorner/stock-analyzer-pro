@@ -4,6 +4,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +18,9 @@ from .market_data import (
     normalize_symbol,
 )
 from .market_policy import (
+    FIELD_FUNDAMENTALS,
+    FIELD_HISTORY,
+    FIELD_PRICE,
     market_policy_now,
 )
 from .rate_limit import MarketRequestLimiter
@@ -254,7 +258,7 @@ def add_ticker(
         raise HTTPException(status_code=400, detail="Invalid symbol.")
     if not watchlist_name:
         raise HTTPException(status_code=400, detail="Missing watchlist name.")
-    logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=f"add:{symbol}")
+    logger = MarketRequestLogger(enabled=settings.debug_market_requests, job_id=str(uuid4()))
     limiter = MarketRequestLimiter(
         enabled=settings.enable_request_limiter,
         quote_min_interval_ms=settings.quote_min_interval_ms,
@@ -276,6 +280,7 @@ def add_ticker(
     except Exception as exc:
         persisted = get_snapshot(service_client, symbol) or {}
         detail = str(exc).strip() or add_incomplete_reason_rule(persisted, settings)
+        print(f"add_ticker failed for {symbol}: {detail}")
         raise HTTPException(status_code=400, detail=f"Could not fully fetch {symbol}: {detail}") from exc
     finally:
         try:
