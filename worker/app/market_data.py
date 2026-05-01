@@ -234,13 +234,13 @@ def fetch_full_snapshot_for_add(
     if annual_fields:
         fundamental_fields.update(annual_fields)
     fundamentals_name = fundamentals.get("name")
+    resolved_name = snapshot.get("name") or symbol
+    if fundamentals_name and normalize_symbol(fundamentals_name) != symbol:
+        resolved_name = fundamentals_name
+
     snapshot.update(
         {
-            "name": (
-                fundamentals_name
-                if fundamentals_name and normalize_symbol(fundamentals_name) != symbol
-                else snapshot.get("name") or symbol
-            ),
+            "name": resolved_name,
             "market_cap": fundamentals.get("market_cap") or snapshot.get("market_cap") or 0,
             "inst_ownership": fundamentals.get("inst_ownership") or 0,
         }
