@@ -42,6 +42,7 @@ export function displayRow(symbol, comment, snapshot = {}) {
   const hasHistory = snapshot.history_status === 'complete'
     || (Array.isArray(snapshot.history_data) && snapshot.history_data.length > 0);
   const hasFundamentalsData = hasRealFundamentals(snapshot);
+  const hasCurrentFundamentalsData = hasRequiredAnnualSeries(snapshot);
   const fundamentalsMissing = snapshot.fundamentals_status === 'error'
     || snapshot.fundamentals_status === 'missing';
   const fundamentalsDisplay = fundamentalsMissing
@@ -49,7 +50,7 @@ export function displayRow(symbol, comment, snapshot = {}) {
     : hasFundamentalsData
       ? 'N/A'
       : 'Updating...';
-  const hasCoreData = hasSnapshot && hasUsablePrice && hasHistory && hasFundamentalsData;
+  const hasCoreData = hasSnapshot && hasUsablePrice && hasHistory && hasCurrentFundamentalsData;
   const hasUsablePartialData = hasSnapshot && hasUsablePrice;
   const dataStatus = hasCoreData
     ? 'OK'
@@ -96,15 +97,28 @@ function hasRealFundamentals(snapshot) {
     || hasAnyAnnualSeries(snapshot, 'profit');
 }
 
+function hasRequiredAnnualSeries(snapshot) {
+  return targetAnnualYears(4).every((year) => (
+    hasAnnualValueForYear(snapshot, 'revenue', year)
+    && hasAnnualValueForYear(snapshot, 'profit', year)
+  ));
+}
+
+function hasAnyCurrentAnnualSeries(snapshot) {
+  return targetAnnualYears(4).some((year) => (
+    hasAnnualValueForYear(snapshot, 'revenue', year)
+    || hasAnnualValueForYear(snapshot, 'profit', year)
+  ));
+}
+
 function derivedStatus(snapshot, prefix) {
-  const stored = snapshot[`${prefix}_status`];
-  if (stored) return stored;
   const values = [];
-  for (let index = 1; index <= 4; index += 1) {
-    const value = snapshot[`${prefix}_year_${index}_value`];
-    if (value === null || value === undefined || value === '') return null;
+  for (const year of targetAnnualYears(4)) {
+    const value = annualRawValue(snapshot, prefix, year);
+    if (value === null || value === undefined || value === '') continue;
     values.push(Number(value));
   }
+  if (!values.length) return null;
   if (values.length < 4 || values.some((value) => Number.isNaN(value))) return null;
   return values[0] > values[1] && values[1] > values[2] && values[2] > values[3]
     ? 'Growth'
@@ -133,9 +147,22 @@ function annualValue(snapshot, prefix, targetYear) {
       return compactMoney(snapshot[`${prefix}_year_${index}_value`]);
     }
   }
-  return targetYear === targetAnnualYears(4)[0] && hasAnyAnnualSeries(snapshot, prefix)
+  return targetYear === targetAnnualYears(4)[0] && hasAnyCurrentAnnualSeries(snapshot)
     ? 'Not published yet'
     : 'N/A';
+}
+
+function hasAnnualValueForYear(snapshot, prefix, targetYear) {
+  return annualRawValue(snapshot, prefix, targetYear) !== null;
+}
+
+function annualRawValue(snapshot, prefix, targetYear) {
+  for (let index = 1; index <= 5; index += 1) {
+    if (Number(snapshot[`${prefix}_year_${index}_label`]) !== Number(targetYear)) continue;
+    const value = snapshot[`${prefix}_year_${index}_value`];
+    return value !== null && value !== undefined && value !== '' ? value : null;
+  }
+  return null;
 }
 
 function hasAnyAnnualSeries(snapshot, prefix) {

@@ -222,7 +222,8 @@ def merge_snapshot(existing: dict[str, Any], fresh: dict[str, Any]) -> dict[str,
     if fresh.get("fundamentals_updated_at"):
         copy_if_positive(merged, fresh, "inst_ownership")
         for key in fundamentals_keys:
-            copy_if_present(merged, fresh, key)
+            if key in fresh:
+                merged[key] = fresh[key]
 
     if fresh.get("last_error"):
         merged["last_error"] = fresh.get("last_error")
@@ -255,10 +256,36 @@ def history_complete(snapshot: dict[str, Any]) -> bool:
 
 def fundamentals_complete(snapshot: dict[str, Any]) -> bool:
     if snapshot.get("fundamentals_status") == "complete":
-        return True
+        return has_required_annual_fields(snapshot)
     if snapshot.get("fundamentals_status") in {"missing", "error"}:
         return False
     return bool(snapshot.get("fundamentals_updated_at") and has_real_fundamentals(snapshot))
+
+
+def has_required_annual_fields(snapshot: dict[str, Any]) -> bool:
+    latest_target_year = datetime.now(timezone.utc).year - 1
+    for year in range(latest_target_year, latest_target_year - 4, -1):
+        if not has_annual_field_for_year(snapshot, "revenue", year):
+            return False
+        if not has_annual_field_for_year(snapshot, "profit", year):
+            return False
+    return True
+
+
+def has_annual_field_for_year(snapshot: dict[str, Any], prefix: str, target_year: int) -> bool:
+    for idx in range(1, 6):
+        if safe_int(snapshot.get(f"{prefix}_year_{idx}_label")) != target_year:
+            continue
+        value = snapshot.get(f"{prefix}_year_{idx}_value")
+        return value is not None
+    return False
+
+
+def safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def has_real_fundamentals(snapshot: dict[str, Any]) -> bool:

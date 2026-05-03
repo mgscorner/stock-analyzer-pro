@@ -181,11 +181,7 @@ def fetch_snapshot(
             if number_or_zero(fundamentals.get("inst_ownership")) > 0:
                 snapshot["inst_ownership"] = fundamentals["inst_ownership"]
             snapshot.update(fundamental_fields)
-            snapshot["fundamentals_status"] = (
-                "complete"
-                if has_real_fundamentals(snapshot)
-                else "missing"
-            )
+            snapshot["fundamentals_status"] = annual_fundamentals_status(snapshot)
             snapshot["fundamentals_updated_at"] = iso_now()
         except Exception as exc:
             snapshot["fundamentals_status"] = "error"
@@ -344,7 +340,7 @@ def fetch_snapshot_for_add(
         try:
             fundamentals = fundamentals_future.result()
             apply_fundamentals_to_snapshot(snapshot, fundamentals, symbol)
-            snapshot["fundamentals_status"] = "complete" if has_real_fundamentals(snapshot) else "missing"
+            snapshot["fundamentals_status"] = annual_fundamentals_status(snapshot)
             snapshot["fundamentals_updated_at"] = iso_now()
         except Exception as exc:
             snapshot["fundamentals_status"] = "error"
@@ -986,7 +982,15 @@ def sec_concept_series(facts: dict[str, Any], concepts: list[str]) -> dict[pd.Ti
         if score > best_score:
             best = values
             best_score = score
+    if not annual_values_are_recent(best):
+        return {}
     return best
+
+
+def annual_values_are_recent(values: dict[pd.Timestamp, float], max_age_years: int = 6) -> bool:
+    latest_allowed_year = datetime.now(timezone.utc).year - 1
+    latest_year = max((timestamp.year for timestamp in values), default=0)
+    return latest_year >= latest_allowed_year - max_age_years
 
 
 def annual_sec_values(rows: list[dict[str, Any]]) -> dict[pd.Timestamp, float]:
@@ -1681,17 +1685,11 @@ def extract_fundamental_fields(financials: pd.DataFrame) -> dict[str, Any]:
         if profit_label:
             profit_values = extract_year_values(financials.loc[profit_label])
 
-    revenue_growth = (
-        len(revenue_values) >= 4
-        and revenue_values[0][1] > revenue_values[1][1] > revenue_values[2][1] > revenue_values[3][1]
-    )
-    profit_growth = (
-        len(profit_values) >= 4
-        and profit_values[0][1] > profit_values[1][1] > profit_values[2][1] > profit_values[3][1]
-    )
+    revenue_growth = len(revenue_values) >= 4 and revenue_values[0][1] > revenue_values[1][1] > revenue_values[2][1] > revenue_values[3][1]
+    profit_growth = len(profit_values) >= 4 and profit_values[0][1] > profit_values[1][1] > profit_values[2][1] > profit_values[3][1]
     fields: dict[str, Any] = {
-        "revenue_status": "Growth" if revenue_growth else "Nope",
-        "profit_status": "Growth" if profit_growth else "Nope",
+        "revenue_status": "Growth" if revenue_growth else ("Nope" if len(revenue_values) >= 4 else None),
+        "profit_status": "Growth" if profit_growth else ("Nope" if len(profit_values) >= 4 else None),
     }
     for idx in range(5):
         fields[f"revenue_year_{idx + 1}_label"] = revenue_values[idx][0] if idx < len(revenue_values) else None
@@ -1763,8 +1761,39 @@ def has_real_fundamentals(snapshot: dict[str, Any]) -> bool:
     )
 
 
+def annual_fundamentals_status(snapshot: dict[str, Any]) -> str:
+    if fundamentals_has_full_annual_series(snapshot):
+        return "complete"
+    if has_real_fundamentals(snapshot):
+        return "partial"
+    return "missing"
+
+
 def fundamentals_has_full_annual_series(snapshot: dict[str, Any]) -> bool:
-    return annual_value_count(snapshot, "revenue") >= 4 and annual_value_count(snapshot, "profit") >= 4
+    latest_target_year = datetime.now(timezone.utc).year - 1
+    for year in range(latest_target_year, latest_target_year - 4, -1):
+        if not annual_value_for_year(snapshot, "revenue", year):
+            return False
+        if not annual_value_for_year(snapshot, "profit", year):
+            return False
+    return True
+
+
+def annual_value_for_year(snapshot: dict[str, Any], prefix: str, target_year: int) -> bool:
+    for idx in range(1, 6):
+        label = snapshot.get(f"{prefix}_year_{idx}_label")
+        value = snapshot.get(f"{prefix}_year_{idx}_value")
+        try:
+            if int(label) != int(target_year):
+                continue
+        except Exception:
+            continue
+        if value is None:
+            return False
+        if isinstance(value, float) and pd.isna(value):
+            return False
+        return number_or_zero(value) != 0
+    return False
 
 
 def annual_value_count(snapshot: dict[str, Any], prefix: str) -> int:

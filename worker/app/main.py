@@ -306,7 +306,7 @@ def intraday_chart(
         enabled=settings.enable_request_limiter,
         quote_min_interval_ms=settings.quote_min_interval_ms,
         history_min_interval_ms=settings.history_min_interval_ms,
-        fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
+        fundamentals_min_interval_ms=0,
     )
     bars = fetch_recent_intraday_bars(clean_symbol, interval, logger, limiter, range_value="1d")
     return IntradayChartResponse(ok=True, symbol=clean_symbol, interval_minutes=interval, bars=bars)

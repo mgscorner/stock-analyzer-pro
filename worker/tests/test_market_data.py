@@ -11,10 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.market_data import (
     download_fundamentals,
+    annual_fundamentals_status,
     fetch_fmp_institutional_ownership_summary,
     fetch_fmp_fundamentals,
     fundamentals_cache_is_complete,
     parse_finviz_institutional_ownership,
+    sec_concept_series,
 )
 
 
@@ -162,6 +164,40 @@ class MarketDataTests(unittest.TestCase):
         )
 
         self.assertEqual(parse_finviz_institutional_ownership(html), 53.45)
+
+    def test_sec_concept_series_rejects_stale_ancient_values(self) -> None:
+        facts = {
+            "Revenues": {
+                "units": {
+                    "USD": [
+                        {"form": "10-K", "fp": "FY", "fy": 2009, "end": "2009-12-31", "filed": "2010-02-01", "val": 640_076_000},
+                        {"form": "10-K", "fp": "FY", "fy": 2008, "end": "2008-12-31", "filed": "2009-02-01", "val": 406_285_000},
+                    ]
+                }
+            }
+        }
+
+        self.assertEqual(sec_concept_series(facts, ["Revenues"]), {})
+
+    def test_annual_fundamentals_status_requires_current_target_years(self) -> None:
+        stale_snapshot = {
+            "revenue_year_1_label": 2009,
+            "revenue_year_1_value": 640_076_000,
+            "revenue_year_2_label": 2008,
+            "revenue_year_2_value": 406_285_000,
+            "revenue_year_3_label": 2007,
+            "revenue_year_3_value": 461_435_000,
+            "profit_year_1_label": 2013,
+            "profit_year_1_value": -406_526_000,
+            "profit_year_2_label": 2012,
+            "profit_year_2_value": 310_916_000,
+            "profit_year_3_label": 2011,
+            "profit_year_3_value": -568_955_000,
+            "profit_year_4_label": 2010,
+            "profit_year_4_value": 332_116_000,
+        }
+
+        self.assertEqual(annual_fundamentals_status(stale_snapshot), "partial")
 
 
 if __name__ == "__main__":
