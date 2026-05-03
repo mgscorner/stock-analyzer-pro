@@ -812,7 +812,7 @@ function Dashboard({ session }) {
   const activeRefreshText = refreshJob
     && (!refreshJob.watchlistName || refreshJob.watchlistName === activeList)
     && ['queued', 'running'].includes(refreshJob.status)
-    ? `Refresh job ${refreshJob.status}: ${(refreshJob.symbols || []).join(', ')}`
+    ? refreshProgressText(refreshJob)
     : '';
   const statusText = activeRefreshText || message || 'Ready.';
   const statusType = activeRefreshText ? 'info' : message ? messageType : 'idle';
@@ -1200,9 +1200,17 @@ function isPriceStale(snapshot) {
 
 function jobMessage(job) {
   if (job.status === 'done') return 'Refresh complete.';
-  if (job.status === 'partial') return `Refresh partially complete: ${job.error || 'some symbols failed.'}`;
-  if (job.status === 'failed') return `Refresh failed: ${job.error || 'unknown error.'}`;
+  if (job.status === 'partial') return 'Refresh finished with partial data. Some financial data is delayed.';
+  if (job.status === 'failed') return 'Refresh failed. Some data providers are unavailable right now.';
   return `Refresh ${job.status}.`;
+}
+
+function refreshProgressText(job) {
+  const message = String(job.error || '').trim();
+  if (message) return message;
+  const symbols = (job.symbols || []).filter(Boolean);
+  if (job.status === 'queued') return `Refresh queued for ${symbols.length || 1} ticker(s)...`;
+  return `Checking ${symbols.length || 1} ticker(s)...`;
 }
 
 function latestDate(rows, key) {

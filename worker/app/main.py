@@ -46,6 +46,7 @@ from .supabase_db import (
     mark_symbol_failed,
     upsert_watchlist_activity,
     upsert_snapshot,
+    update_job_progress,
 )
 from .use_cases import (
     add_ticker_use_case,
@@ -482,10 +483,11 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
         enabled=settings.enable_request_limiter,
         quote_min_interval_ms=settings.quote_min_interval_ms,
         history_min_interval_ms=settings.history_min_interval_ms,
-        fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
+        fundamentals_min_interval_ms=0,
     )
     try:
         mark_job(service_client, job_id, "running")
+        update_job_progress(service_client, job_id, f"Checking {len(symbols)} ticker(s)...")
     except Exception as exc:
         print(f"Could not mark job {job_id} running: {exc}")
 
@@ -496,6 +498,7 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     elif mode == "initial" and len(symbols) == 1:
         symbol = symbols[0]
         try:
+            update_job_progress(service_client, job_id, f"Checking {symbol}...")
             ensure_complete_snapshot_for_add(service_client, settings, symbol, logger, limiter)
         except Exception as exc:
             message = str(exc)
@@ -506,6 +509,7 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
                 failures.append(f"{symbol}: could not record failure: {mark_exc}")
     elif layers == ["quote"] and len(symbols) > 1:
         try:
+            update_job_progress(service_client, job_id, f"Updating prices for {len(symbols)} ticker(s)...")
             existing = {symbol: get_snapshot(service_client, symbol) or {} for symbol in symbols}
             fallback_spacing_seconds = 4.0 if mode == "visible_quote_scheduled" else 0.0
             for snapshot in batch_quote_snapshots(
@@ -524,6 +528,7 @@ def process_job(job_id: str, symbols: list[str], mode: str, layers: list[str]) -
     else:
         for symbol in symbols:
             try:
+                update_job_progress(service_client, job_id, f"Checking {symbol}...")
                 snapshot = fetch_snapshot(symbol, layers=layers, logger=logger, limiter=limiter)
                 upsert_snapshot(service_client, snapshot)
             except Exception as exc:
@@ -557,7 +562,13 @@ def refresh_smart_visible_symbols(
     limiter: MarketRequestLimiter,
     failures: list[str],
 ) -> None:
-    refresh_smart_visible_symbols_use_case(service_client, settings, symbols, logger, limiter, failures)
+    def progress(message: str) -> None:
+        try:
+            update_job_progress(service_client, job_id, message)
+        except Exception as exc:
+            print(f"Could not update job {job_id} progress: {exc}")
+
+    refresh_smart_visible_symbols_use_case(service_client, settings, symbols, logger, limiter, failures, progress)
 
 
 def refresh_visible_missing_fundamentals(

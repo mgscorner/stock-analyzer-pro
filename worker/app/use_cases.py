@@ -187,6 +187,7 @@ def refresh_smart_visible_symbols_use_case(
     logger,
     limiter,
     failures: list[str],
+    progress: Callable[[str], None] | None = None,
 ) -> None:
     quote_only_symbols: list[str] = []
     history_symbols: list[str] = []
@@ -208,6 +209,8 @@ def refresh_smart_visible_symbols_use_case(
             combined_symbols.append(symbol)
 
     if quote_only_symbols:
+        if progress:
+            progress(f"Updating prices for {len(quote_only_symbols)} ticker(s)...")
         try:
             existing = {symbol: get_snapshot(client, symbol) or {} for symbol in quote_only_symbols}
             for snapshot in batch_quote_snapshots(
@@ -225,6 +228,8 @@ def refresh_smart_visible_symbols_use_case(
             failures.append(f"batch quote: {exc}")
 
     for symbol in history_symbols:
+        if progress:
+            progress(f"Updating chart data for {symbol}...")
         try:
             refresh_symbol_layers_use_case(client, settings, symbol, [FIELD_HISTORY], logger, limiter)
         except Exception as exc:
@@ -233,14 +238,20 @@ def refresh_smart_visible_symbols_use_case(
             _record_failure(client, symbol, message, failures)
 
     for symbol in fundamentals_symbols:
+        if progress:
+            progress(f"Checking financial data for {symbol}...")
         try:
             refresh_visible_fundamentals_use_case(client, settings, symbol, logger, limiter)
         except Exception as exc:
             message = str(exc)
+            if progress:
+                progress(f"Some data for {symbol} is delayed. Saved what is available.")
             failures.append(f"{symbol}: {message}")
             _record_failure(client, symbol, message, failures)
 
     for symbol in combined_symbols:
+        if progress:
+            progress(f"Checking {symbol}...")
         snapshot = get_snapshot(client, symbol) or {}
         layers = due_layers_for_visible(snapshot, settings)
         non_fund_layers = [layer for layer in layers if layer != FIELD_FUNDAMENTALS]
@@ -248,9 +259,13 @@ def refresh_smart_visible_symbols_use_case(
             if non_fund_layers:
                 refresh_symbol_layers_use_case(client, settings, symbol, non_fund_layers, logger, limiter)
             if FIELD_FUNDAMENTALS in layers:
+                if progress:
+                    progress(f"Checking financial data for {symbol}...")
                 refresh_visible_fundamentals_use_case(client, settings, symbol, logger, limiter)
         except Exception as exc:
             message = str(exc)
+            if progress:
+                progress(f"Some data for {symbol} is delayed. Saved what is available.")
             failures.append(f"{symbol}: {message}")
             _record_failure(client, symbol, message, failures)
 

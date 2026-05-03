@@ -92,7 +92,17 @@ def mark_job(client: Client, job_id: str, status: str, error: str | None = None)
         payload["finished_at"] = now
     if error:
         payload["error"] = error[:2000]
+    elif status == "done":
+        payload["error"] = None
 
+    execute_with_retry(lambda: client.table("refresh_jobs").update(payload).eq("id", job_id).execute())
+
+
+def update_job_progress(client: Client, job_id: str, message: str) -> None:
+    payload = {
+        "status": "running",
+        "error": message[:2000],
+    }
     execute_with_retry(lambda: client.table("refresh_jobs").update(payload).eq("id", job_id).execute())
 
 
