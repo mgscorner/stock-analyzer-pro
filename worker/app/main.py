@@ -263,7 +263,7 @@ def add_ticker(
         enabled=settings.enable_request_limiter,
         quote_min_interval_ms=settings.quote_min_interval_ms,
         history_min_interval_ms=settings.history_min_interval_ms,
-        fundamentals_min_interval_ms=settings.fundamentals_min_interval_ms,
+        fundamentals_min_interval_ms=0,
     )
     try:
         snapshot = add_ticker_use_case(

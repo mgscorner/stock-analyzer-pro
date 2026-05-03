@@ -63,7 +63,7 @@ def get_settings() -> Settings:
         in {"1", "true", "True", "yes"},
         fundamentals_provider_order=parse_csv_list(
             os.getenv("WORKER_FUNDAMENTALS_PROVIDER_ORDER"),
-            ["yfinance", "sec", "finnhub_reported", "fmp"],
+            ["sec", "fmp", "finnhub_reported", "yfinance"],
         ),
         market_main_open_hour=safe_int(os.getenv("WORKER_MARKET_MAIN_OPEN_HOUR"), 9),
         market_main_open_minute=safe_int(os.getenv("WORKER_MARKET_MAIN_OPEN_MINUTE"), 30),

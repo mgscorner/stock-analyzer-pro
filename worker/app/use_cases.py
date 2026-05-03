@@ -7,7 +7,15 @@ from fastapi import HTTPException
 from .market_data import batch_quote_snapshots, fetch_full_snapshot_for_add, fetch_snapshot
 from .market_policy import FIELD_FUNDAMENTALS, FIELD_HISTORY, FIELD_PRICE
 from .settings import Settings
-from .snapshot_rules import add_incomplete_reason, add_snapshot_usable, due_layers_for_visible
+from .snapshot_rules import (
+    add_incomplete_reason,
+    add_snapshot_fresh,
+    add_snapshot_usable,
+    due_layers_for_visible,
+    has_history,
+    has_positive_ownership,
+    has_positive_price,
+)
 from .supabase_db import get_snapshot, mark_symbol_failed, upsert_snapshot
 
 
@@ -32,6 +40,76 @@ def ensure_complete_snapshot_for_add(
     if not add_snapshot_usable(persisted, settings):
         raise ValueError(add_incomplete_reason(persisted, settings))
     return persisted
+
+
+def ensure_snapshot_for_add_or_partial(
+    client,
+    settings: Settings,
+    symbol: str,
+    logger,
+    limiter,
+    strict_fetcher: SnapshotFetcher = fetch_full_snapshot_for_add,
+    partial_fetcher: SnapshotFetcher = fetch_snapshot,
+) -> dict[str, Any]:
+    existing = get_snapshot(client, symbol) or {}
+    if add_snapshot_usable(existing, settings) or partial_add_snapshot_usable(existing, settings):
+        return existing
+
+    strict_error: Exception | None = None
+    try:
+        return ensure_complete_snapshot_for_add(
+            client,
+            settings,
+            symbol,
+            logger,
+            limiter,
+            fetcher=strict_fetcher,
+        )
+    except Exception as exc:
+        strict_error = exc
+
+    fetched = partial_fetcher(
+        symbol,
+        ["quote", "history", "fundamentals"],
+        logger=logger,
+        limiter=limiter,
+        force_fundamentals_fallbacks=True,
+        allow_yfinance_fundamentals=False,
+    )
+    if not partial_add_snapshot_has_required_market_data(fetched):
+        raise ValueError(add_incomplete_reason(fetched, settings)) from strict_error
+
+    if not partial_add_snapshot_has_some_fundamentals(fetched):
+        fetched["fundamentals_status"] = "missing"
+    fetched["snapshot_status"] = "partial"
+    fetched["last_error"] = str(strict_error) if strict_error else "partial fundamentals"
+    upsert_snapshot(client, fetched)
+
+    persisted = get_snapshot(client, symbol) or fetched
+    if not partial_add_snapshot_has_required_market_data(persisted):
+        raise ValueError(add_incomplete_reason(persisted, settings)) from strict_error
+    return persisted
+
+
+def partial_add_snapshot_usable(snapshot: dict[str, Any], settings: Settings) -> bool:
+    return (
+        partial_add_snapshot_has_required_market_data(snapshot)
+        and partial_add_snapshot_has_some_fundamentals(snapshot)
+        and add_snapshot_fresh(snapshot, settings)
+    )
+
+
+def partial_add_snapshot_has_required_market_data(snapshot: dict[str, Any]) -> bool:
+    return has_positive_price(snapshot) and has_history(snapshot)
+
+
+def partial_add_snapshot_has_some_fundamentals(snapshot: dict[str, Any]) -> bool:
+    return has_positive_ownership(snapshot) or any(
+        snapshot.get(f"{prefix}_year_{idx}_label") is not None
+        and snapshot.get(f"{prefix}_year_{idx}_value") is not None
+        for prefix in ("revenue", "profit")
+        for idx in range(1, 6)
+    )
 
 
 def ensure_not_duplicate_watchlist_entry(client, user_id: str, watchlist_name: str, symbol: str) -> None:
@@ -76,7 +154,7 @@ def add_ticker_use_case(
     limiter,
 ) -> dict[str, Any]:
     ensure_not_duplicate_watchlist_entry(client, user_id, watchlist_name, symbol)
-    snapshot = ensure_complete_snapshot_for_add(client, settings, symbol, logger, limiter)
+    snapshot = ensure_snapshot_for_add_or_partial(client, settings, symbol, logger, limiter)
     insert_watchlist_entry(client, user_id, watchlist_name, symbol)
     return snapshot
 
@@ -89,6 +167,7 @@ def refresh_visible_fundamentals_use_case(client, settings: Settings, symbol: st
         logger=logger,
         limiter=limiter,
         force_fundamentals_fallbacks=True,
+        allow_yfinance_fundamentals=False,
     )
     merged = {**existing, **fundamentals_snapshot}
     upsert_snapshot(client, merged)
@@ -102,6 +181,7 @@ def refresh_visible_missing_fundamentals_use_case(client, settings: Settings, sy
         logger=logger,
         limiter=limiter,
         force_fundamentals_fallbacks=True,
+        allow_yfinance_fundamentals=False,
     )
     if fundamentals_snapshot.get("fundamentals_status") != "complete":
         raise ValueError("No complete annual fundamentals returned by configured providers")

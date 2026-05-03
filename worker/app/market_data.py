@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 import time
-from datetime import datetime, timezone
+from calendar import monthrange
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -107,6 +109,7 @@ def fetch_snapshot(
     logger: MarketRequestLogger | None = None,
     limiter: MarketRequestLimiter | None = None,
     force_fundamentals_fallbacks: bool = False,
+    allow_yfinance_fundamentals: bool = True,
 ) -> dict[str, Any]:
     symbol = normalize_symbol(symbol)
     requested_layers = set(layers or ["quote", "history", "fundamentals"])
@@ -157,6 +160,7 @@ def fetch_snapshot(
                 logger,
                 limiter,
                 force_all_providers=force_fundamentals_fallbacks,
+                allow_yfinance=allow_yfinance_fundamentals,
             )
             fundamental_fields = extract_fundamental_fields(fundamentals["financials"])
             annual_fields = fundamentals.get("annual_fields") or {}
@@ -400,6 +404,7 @@ def download_fundamentals(
     logger: MarketRequestLogger,
     limiter: MarketRequestLimiter,
     force_all_providers: bool = False,
+    allow_yfinance: bool = True,
 ) -> dict[str, Any]:
     cached = cache_get(_fundamentals_cache, symbol, FUNDAMENTALS_CACHE_TTL_SECONDS)
     if cached and fundamentals_cache_is_complete(cached):
@@ -409,7 +414,11 @@ def download_fundamentals(
     use_all_providers = force_all_providers or fundamentals_fallbacks_enabled()
     if not use_all_providers:
         provider_order = provider_order[:1]
-    if not provider_order:
+    if not allow_yfinance:
+        provider_order = [provider for provider in provider_order if not is_yfinance_provider(provider)]
+    if quote_summary_cooldown_remaining() > 0:
+        provider_order = [provider for provider in provider_order if not is_yfinance_provider(provider)]
+    if not provider_order and allow_yfinance:
         provider_order = ["yfinance"]
 
     result: dict[str, Any] = {
@@ -426,6 +435,8 @@ def download_fundamentals(
             continue
         saw_provider = True
         result = merge_fundamentals_payload(result, partial)
+        if fundamentals_payload_complete(result):
+            break
         if not use_all_providers:
             break
 
@@ -441,7 +452,15 @@ def download_fundamentals(
 def fundamentals_cache_is_complete(snapshot: dict[str, Any]) -> bool:
     if not isinstance(snapshot, dict):
         return False
-    return fundamentals_has_full_annual_series(snapshot)
+    return fundamentals_payload_complete(snapshot)
+
+
+def fundamentals_payload_complete(payload: dict[str, Any]) -> bool:
+    fields = extract_fundamental_fields(payload.get("financials"))
+    annual_fields = payload.get("annual_fields") or {}
+    if annual_fields:
+        fields.update(annual_fields)
+    return fundamentals_has_full_annual_series(fields) and number_or_zero(payload.get("inst_ownership")) > 0
 
 
 def fetch_fundamentals_provider(
@@ -451,7 +470,7 @@ def fetch_fundamentals_provider(
     limiter: MarketRequestLimiter,
 ) -> dict[str, Any]:
     provider = normalize_text(provider).lower()
-    if provider in {"yfinance", "yahoo", "yahoo_finance"}:
+    if is_yfinance_provider(provider):
         return fetch_yfinance_fundamentals(symbol, logger)
     if provider in {"sec", "sec_companyfacts", "sec_company_facts"}:
         return fetch_sec_fundamentals(symbol, logger, limiter)
@@ -462,8 +481,13 @@ def fetch_fundamentals_provider(
     return {}
 
 
+def is_yfinance_provider(provider: str) -> bool:
+    return normalize_text(provider).lower() in {"yfinance", "yahoo", "yahoo_finance"}
+
+
 def fetch_yfinance_fundamentals(symbol: str, logger: MarketRequestLogger) -> dict[str, Any]:
     symbol = normalize_symbol(symbol)
+    ensure_quote_summary_allowed()
     stock = yf.Ticker(symbol)
     info: dict[str, Any] = {}
     try:
@@ -475,7 +499,8 @@ def fetch_yfinance_fundamentals(symbol: str, logger: MarketRequestLogger) -> dic
     try:
         with logger.track(symbol, "fundamentals", "yfinance_financials"):
             financials = stock.financials
-    except Exception:
+    except Exception as exc:
+        note_quote_summary_failure(exc)
         financials = pd.DataFrame()
     if financials is None or not isinstance(financials, pd.DataFrame):
         financials = pd.DataFrame()
@@ -528,7 +553,7 @@ def fundamentals_fallbacks_enabled() -> bool:
 
 
 def fundamentals_provider_order() -> list[str]:
-    raw = os.getenv("WORKER_FUNDAMENTALS_PROVIDER_ORDER", "yfinance,sec,finnhub_reported,fmp")
+    raw = os.getenv("WORKER_FUNDAMENTALS_PROVIDER_ORDER", "sec,fmp,finnhub_reported,yfinance")
     order: list[str] = []
     seen: set[str] = set()
     for item in raw.split(","):
@@ -556,19 +581,27 @@ def cache_set(cache: dict[str, tuple[float, Any]], key: str, value: Any) -> None
 
 
 def ensure_quote_summary_allowed() -> None:
-    if time.time() < _quote_summary_blocked_until:
-        remaining = int(_quote_summary_blocked_until - time.time())
+    remaining = quote_summary_cooldown_remaining()
+    if remaining > 0:
         raise ValueError(f"Yahoo fundamentals endpoint is cooling down for {remaining}s after rate limiting")
 
 
-def safe_stock_info(stock: yf.Ticker) -> dict[str, Any]:
+def quote_summary_cooldown_remaining() -> int:
+    return max(0, int(_quote_summary_blocked_until - time.time()))
+
+
+def note_quote_summary_failure(exc: Exception) -> None:
     global _quote_summary_blocked_until
+    message = str(exc)
+    if "Too Many Requests" in message or "Expecting value" in message or "429" in message:
+        _quote_summary_blocked_until = time.time() + QUOTE_SUMMARY_BACKOFF_SECONDS
+
+
+def safe_stock_info(stock: yf.Ticker) -> dict[str, Any]:
     try:
         return dict(stock.info or {})
     except Exception as exc:
-        message = str(exc)
-        if "Too Many Requests" in message or "Expecting value" in message:
-            _quote_summary_blocked_until = time.time() + QUOTE_SUMMARY_BACKOFF_SECONDS
+        note_quote_summary_failure(exc)
         raise
 
 
@@ -605,7 +638,9 @@ def fetch_yfinance_major_holder_ownership(symbol: str, logger: MarketRequestLogg
             if "INSTITUTION" in label and "FLOAT" not in label:
                 return normalize_major_holder_value(value)
         return 0
-    except Exception:
+    except Exception as exc:
+        note_quote_summary_failure(exc)
+        print(f"{symbol}: Yahoo ownership failed: {exc}")
         return 0
 
 
@@ -912,7 +947,21 @@ def fetch_fmp_fundamentals(
         return {}
     symbol = normalize_symbol(symbol)
     try:
+        ownership = fetch_finviz_institutional_ownership(symbol, logger, limiter)
+        if ownership > 0:
+            return fmp_profile_payload(symbol, {}, ownership)
+
+        ownership = fetch_fmp_institutional_ownership_summary(symbol, logger, limiter)
+        if ownership > 0:
+            return fmp_profile_payload(symbol, {}, ownership)
+
         profile = fetch_fmp_profile_fields(symbol, logger, limiter)
+        if ownership <= 0:
+            ownership = (
+                profile.get("inst_ownership")
+                or fetch_finnhub_ownership_metric(symbol, logger, limiter)
+            )
+        profile_payload = fmp_profile_payload(symbol, profile, ownership)
 
         with logger.track(symbol, "fundamentals", "fmp_income_statement") as span:
             income_response = requests.get(
@@ -924,20 +973,37 @@ def fetch_fmp_fundamentals(
             income_response.raise_for_status()
         income_rows = income_response.json() or []
         if not isinstance(income_rows, list) or not income_rows:
-            return {}
+            return profile_payload
 
         financials = fmp_income_statement_to_frame(income_rows)
         if financials.empty:
-            return {}
+            return profile_payload
 
         return {
             "name": profile.get("name") or symbol,
             "market_cap": profile.get("market_cap") or 0,
-            "inst_ownership": profile.get("inst_ownership") or fetch_finnhub_ownership_metric(symbol, logger, limiter),
+            "inst_ownership": ownership,
             "financials": financials,
         }
     except Exception:
+        return fmp_profile_payload(symbol, profile, ownership) if "profile" in locals() else {}
+
+
+def fmp_profile_payload(symbol: str, profile: dict[str, Any], ownership: float = 0) -> dict[str, Any]:
+    if not profile and ownership <= 0:
         return {}
+    name = profile.get("name") or symbol if profile else symbol
+    market_cap = profile.get("market_cap") or 0 if profile else 0
+    inst_ownership = ownership or (profile.get("inst_ownership") or 0 if profile else 0)
+    payload = {
+        "name": name,
+        "market_cap": market_cap,
+        "inst_ownership": inst_ownership,
+        "financials": pd.DataFrame(),
+    }
+    if payload["market_cap"] or payload["inst_ownership"] or payload["name"] != symbol:
+        return payload
+    return {}
 
 
 def fetch_fmp_profile_fields(
@@ -986,6 +1052,51 @@ def fetch_fmp_profile_fields(
         return {}
 
 
+def fetch_fmp_institutional_ownership_summary(
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> float:
+    api_key = provider_key("FMP_API_KEY")
+    if not api_key:
+        return 0
+    symbol = normalize_symbol(symbol)
+    for year, quarter in fmp_ownership_period_candidates():
+        try:
+            limiter.wait("fundamentals")
+            with logger.track(symbol, "ownership", "fmp_positions_summary") as span:
+                response = requests.get(
+                    f"{FMP_STABLE_BASE_URL}/institutional-ownership/symbol-positions-summary",
+                    params={"symbol": symbol, "year": year, "quarter": quarter, "apikey": api_key},
+                    timeout=12,
+                )
+                span.status_code = response.status_code
+                response.raise_for_status()
+            payload = response.json() or {}
+            if isinstance(payload, list):
+                payload = payload[0] if payload else {}
+            ownership = normalize_ownership_percent(payload.get("ownershipPercent"))
+            if ownership > 0:
+                return ownership
+        except Exception:
+            continue
+    return 0
+
+
+def fmp_ownership_period_candidates() -> list[tuple[int, int]]:
+    now = datetime.now(timezone.utc)
+    candidates: list[tuple[int, int]] = []
+    for year in range(now.year, now.year - 3, -1):
+        for quarter in range(4, 0, -1):
+            end_month = quarter * 3
+            end_day = monthrange(year, end_month)[1]
+            filing_due_at = datetime(year, end_month, end_day, tzinfo=timezone.utc) + timedelta(days=45)
+            if filing_due_at > now:
+                continue
+            candidates.append((year, quarter))
+    return candidates
+
+
 def fetch_finnhub_ownership_metric(
     symbol: str,
     logger: MarketRequestLogger,
@@ -1022,6 +1133,48 @@ def fetch_finnhub_ownership_metric(
     except Exception as exc:
         print(f"{symbol}: Finnhub ownership failed: {exc}")
         return 0
+
+
+def fetch_finviz_institutional_ownership(
+    symbol: str,
+    logger: MarketRequestLogger,
+    limiter: MarketRequestLimiter,
+) -> float:
+    symbol = normalize_symbol(symbol)
+    if not symbol:
+        return 0
+    try:
+        limiter.wait("fundamentals")
+        with logger.track(symbol, "ownership", "finviz_snapshot") as span:
+            response = requests.get(
+                "https://finviz.com/quote.ashx",
+                params={"t": symbol, "p": "d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=12,
+            )
+            span.status_code = response.status_code
+            response.raise_for_status()
+        ownership = parse_finviz_institutional_ownership(response.text)
+        if ownership <= 0:
+            print(f"{symbol}: Finviz ownership missing or zero")
+        return ownership
+    except Exception as exc:
+        print(f"{symbol}: Finviz ownership failed: {exc}")
+        return 0
+
+
+def parse_finviz_institutional_ownership(html: str) -> float:
+    if not html:
+        return 0
+    pattern = re.compile(
+        r'<div class="snapshot-td-label">\s*Inst Own\s*</div>\s*</td>\s*'
+        r'<td\b[^>]*>.*?<b>\s*([^<]+?)\s*</b>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(html)
+    if not match:
+        return 0
+    return normalize_major_holder_value(match.group(1))
 
 
 def first_positive(payload: dict[str, Any], keys: list[str]) -> float:
