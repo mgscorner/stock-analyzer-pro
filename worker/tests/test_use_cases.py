@@ -50,7 +50,7 @@ class UseCaseTests(unittest.TestCase):
 
     @patch("app.use_cases.upsert_snapshot")
     @patch("app.use_cases.get_snapshot")
-    def test_add_snapshot_accepts_partial_fundamentals_after_strict_fetch_fails(self, get_snapshot, upsert_snapshot) -> None:
+    def test_add_snapshot_accepts_partial_fundamentals_with_single_fetch(self, get_snapshot, upsert_snapshot) -> None:
         partial = full_snapshot()
         partial["symbol"] = "IREN"
         partial["revenue_year_4_label"] = None
@@ -59,7 +59,8 @@ class UseCaseTests(unittest.TestCase):
         partial["profit_year_4_value"] = None
         partial["snapshot_status"] = "partial"
         partial["fundamentals_status"] = "complete"
-        get_snapshot.side_effect = [{}, {}, partial]
+        get_snapshot.side_effect = [{}, partial]
+        calls = []
 
         result = ensure_snapshot_for_add_or_partial(
             self.client,
@@ -67,16 +68,17 @@ class UseCaseTests(unittest.TestCase):
             "IREN",
             logger=None,
             limiter=None,
-            strict_fetcher=lambda symbol, logger, limiter: (_ for _ in ()).throw(
-                ValueError("No complete annual fundamentals returned by configured providers")
+            fetcher=lambda symbol, logger, limiter: (
+                calls.append(symbol) or partial
             ),
-            partial_fetcher=lambda symbol, layers, logger, limiter, force_fundamentals_fallbacks, allow_yfinance_fundamentals: partial,
         )
 
         upsert_snapshot.assert_called_once()
         self.assertEqual(result["symbol"], "IREN")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], "IREN")
         self.assertEqual(upsert_snapshot.call_args.args[1]["snapshot_status"], "partial")
-        self.assertIn("No complete annual fundamentals", upsert_snapshot.call_args.args[1]["last_error"])
+        self.assertIn("annual fundamentals", upsert_snapshot.call_args.args[1]["last_error"])
 
     @patch("app.use_cases.upsert_snapshot")
     @patch("app.use_cases.get_snapshot")
@@ -91,8 +93,7 @@ class UseCaseTests(unittest.TestCase):
                 "BAD",
                 logger=None,
                 limiter=None,
-                strict_fetcher=lambda symbol, logger, limiter: (_ for _ in ()).throw(ValueError("strict failed")),
-                partial_fetcher=lambda symbol, layers, logger, limiter, force_fundamentals_fallbacks, allow_yfinance_fundamentals: partial,
+                fetcher=lambda symbol, logger, limiter: partial,
             )
 
         upsert_snapshot.assert_not_called()

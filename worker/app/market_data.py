@@ -4,6 +4,7 @@ import os
 import re
 import time
 from calendar import monthrange
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -262,6 +263,97 @@ def fetch_full_snapshot_for_add(
     snapshot["snapshot_status"] = "complete"
     snapshot["last_error"] = None
     snapshot["last_error_at"] = None
+    snapshot["updated_at"] = iso_now()
+    return snapshot
+
+
+def apply_fundamentals_to_snapshot(snapshot: dict[str, Any], fundamentals: dict[str, Any], symbol: str) -> None:
+    fundamental_fields = extract_fundamental_fields(fundamentals["financials"])
+    annual_fields = fundamentals.get("annual_fields") or {}
+    if annual_fields:
+        fundamental_fields.update(annual_fields)
+    fundamentals_name = fundamentals.get("name")
+    resolved_name = snapshot.get("name") or symbol
+    if fundamentals_name and normalize_symbol(fundamentals_name) != symbol:
+        resolved_name = fundamentals_name
+
+    snapshot.update(
+        {
+            "name": resolved_name,
+            "market_cap": fundamentals.get("market_cap") or snapshot.get("market_cap") or 0,
+            "inst_ownership": fundamentals.get("inst_ownership") or 0,
+        }
+    )
+    snapshot.update(fundamental_fields)
+
+
+def fetch_snapshot_for_add(
+    symbol: str,
+    logger: MarketRequestLogger | None = None,
+    limiter: MarketRequestLimiter | None = None,
+) -> dict[str, Any]:
+    symbol = normalize_symbol(symbol)
+    logger = logger or MarketRequestLogger(enabled=False)
+    limiter = limiter or MarketRequestLimiter(enabled=False)
+    snapshot: dict[str, Any] = {"symbol": symbol}
+    errors: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        quote_future = executor.submit(download_quote, symbol, logger, limiter)
+        history_future = executor.submit(download_history, symbol, logger, limiter)
+        fundamentals_future = executor.submit(
+            download_fundamentals,
+            symbol,
+            logger,
+            limiter,
+            True,
+            False,
+        )
+
+        try:
+            snapshot.update(quote_future.result())
+            snapshot["quote_status"] = "complete"
+            snapshot["price_updated_at"] = iso_now()
+        except Exception as exc:
+            snapshot["quote_status"] = "error"
+            errors.append(f"quote: {exc}")
+
+        history = pd.DataFrame()
+        try:
+            history = history_future.result()
+            if history.empty:
+                raise ValueError("No price history returned")
+            snapshot.update(extract_close_baselines(history))
+            snapshot["history_data"] = history_to_records(history)
+            snapshot["history_status"] = "complete"
+            snapshot["history_updated_at"] = iso_now()
+        except Exception as exc:
+            snapshot["history_status"] = "error"
+            errors.append(f"history: {exc}")
+
+        if number_or_zero(snapshot.get("price")) <= 0 and not history.empty:
+            snapshot["price"] = latest_close(history)
+            snapshot["name"] = snapshot.get("name") or symbol
+            snapshot["price_updated_at"] = iso_now()
+            if number_or_zero(snapshot.get("price")) > 0:
+                snapshot["quote_status"] = "complete"
+
+        if number_or_zero(snapshot.get("price")) <= 0:
+            raise ValueError(f"No valid market data found for {symbol}. Check the ticker symbol.")
+
+        try:
+            fundamentals = fundamentals_future.result()
+            apply_fundamentals_to_snapshot(snapshot, fundamentals, symbol)
+            snapshot["fundamentals_status"] = "complete" if has_real_fundamentals(snapshot) else "missing"
+            snapshot["fundamentals_updated_at"] = iso_now()
+        except Exception as exc:
+            snapshot["fundamentals_status"] = "error"
+            errors.append(f"fundamentals: {exc}")
+
+    snapshot = recalc_performance(snapshot)
+    snapshot["snapshot_status"] = snapshot_status(snapshot)
+    snapshot["last_error"] = "; ".join(errors) if errors else None
+    snapshot["last_error_at"] = iso_now() if errors else None
     snapshot["updated_at"] = iso_now()
     return snapshot
 

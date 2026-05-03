@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
-from .market_data import batch_quote_snapshots, fetch_full_snapshot_for_add, fetch_snapshot
+from .market_data import batch_quote_snapshots, fetch_full_snapshot_for_add, fetch_snapshot, fetch_snapshot_for_add
 from .market_policy import FIELD_FUNDAMENTALS, FIELD_HISTORY, FIELD_PRICE
 from .settings import Settings
 from .snapshot_rules import (
@@ -48,46 +48,32 @@ def ensure_snapshot_for_add_or_partial(
     symbol: str,
     logger,
     limiter,
-    strict_fetcher: SnapshotFetcher = fetch_full_snapshot_for_add,
-    partial_fetcher: SnapshotFetcher = fetch_snapshot,
+    fetcher: SnapshotFetcher = fetch_snapshot_for_add,
 ) -> dict[str, Any]:
     existing = get_snapshot(client, symbol) or {}
     if add_snapshot_usable(existing, settings) or partial_add_snapshot_usable(existing, settings):
         return existing
 
-    strict_error: Exception | None = None
-    try:
-        return ensure_complete_snapshot_for_add(
-            client,
-            settings,
-            symbol,
-            logger,
-            limiter,
-            fetcher=strict_fetcher,
-        )
-    except Exception as exc:
-        strict_error = exc
-
-    fetched = partial_fetcher(
-        symbol,
-        ["quote", "history", "fundamentals"],
-        logger=logger,
-        limiter=limiter,
-        force_fundamentals_fallbacks=True,
-        allow_yfinance_fundamentals=False,
-    )
+    fetched = fetcher(symbol, logger, limiter)
     if not partial_add_snapshot_has_required_market_data(fetched):
-        raise ValueError(add_incomplete_reason(fetched, settings)) from strict_error
+        raise ValueError(add_incomplete_reason(fetched, settings))
 
-    if not partial_add_snapshot_has_some_fundamentals(fetched):
+    if add_snapshot_usable(fetched, settings):
+        fetched["snapshot_status"] = "complete"
+        fetched["last_error"] = None
+    elif partial_add_snapshot_has_some_fundamentals(fetched):
+        fetched["snapshot_status"] = "partial"
+        fetched["last_error"] = add_incomplete_reason(fetched, settings)
+    else:
         fetched["fundamentals_status"] = "missing"
-    fetched["snapshot_status"] = "partial"
-    fetched["last_error"] = str(strict_error) if strict_error else "partial fundamentals"
+        fetched["snapshot_status"] = "partial"
+        fetched["last_error"] = "missing fundamentals"
+
     upsert_snapshot(client, fetched)
 
     persisted = get_snapshot(client, symbol) or fetched
     if not partial_add_snapshot_has_required_market_data(persisted):
-        raise ValueError(add_incomplete_reason(persisted, settings)) from strict_error
+        raise ValueError(add_incomplete_reason(persisted, settings))
     return persisted
 
 
