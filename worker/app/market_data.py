@@ -303,7 +303,7 @@ def fetch_snapshot_for_add(
             logger,
             limiter,
             True,
-            False,
+            True,
         )
 
         try:
@@ -499,9 +499,6 @@ def download_fundamentals(
         return cached
 
     provider_order = fundamentals_provider_order()
-    use_all_providers = force_all_providers or fundamentals_fallbacks_enabled()
-    if not use_all_providers:
-        provider_order = provider_order[:1]
     if not allow_yfinance:
         provider_order = [provider for provider in provider_order if not is_yfinance_provider(provider)]
     if quote_summary_cooldown_remaining() > 0:
@@ -524,8 +521,6 @@ def download_fundamentals(
         saw_provider = True
         result = merge_fundamentals_payload(result, partial)
         if fundamentals_payload_complete(result):
-            break
-        if not use_all_providers:
             break
 
     if not saw_provider:
@@ -634,10 +629,6 @@ def copy_if_positive_local(target: dict[str, Any], source: dict[str, Any], key: 
         value = 0
     if value > 0:
         target[key] = source[key]
-
-
-def fundamentals_fallbacks_enabled() -> bool:
-    return os.getenv("WORKER_ENABLE_FUNDAMENTALS_FALLBACKS", "0").strip() in {"1", "true", "True", "yes"}
 
 
 def fundamentals_provider_order() -> list[str]:

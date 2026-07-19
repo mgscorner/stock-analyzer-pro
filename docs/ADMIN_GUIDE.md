@@ -90,7 +90,6 @@ WORKER_ALLOWED_ORIGINS=http://localhost:5173
 WORKER_DEBUG_MARKET_REQUESTS=0
 WORKER_ENABLE_REQUEST_LIMITER=1
 WORKER_ENABLE_QUOTE_FAST_LANE=0
-WORKER_ENABLE_FUNDAMENTALS_FALLBACKS=0
 WORKER_FUNDAMENTALS_PROVIDER_ORDER=yfinance,sec,finnhub_reported,fmp
 WORKER_MARKET_MAIN_OPEN_HOUR=9
 WORKER_MARKET_MAIN_OPEN_MINUTE=30
@@ -129,8 +128,7 @@ WORKER_ACTIVE_WATCHLIST_WINDOW_MINUTES=10
 | `WORKER_DEBUG_MARKET_REQUESTS` | optional | `0` | When `1`, writes provider/API request attempts to `public.market_request_logs`. |
 | `WORKER_ENABLE_REQUEST_LIMITER` | optional | `1` | Enables spacing between outbound provider calls. Keep enabled by default. |
 | `WORKER_ENABLE_QUOTE_FAST_LANE` | optional | `0` | Allows the first visible-list quote batch attempt to bypass the quote limiter. Off by default. |
-| `WORKER_ENABLE_FUNDAMENTALS_FALLBACKS` | optional | `0` | Enables provider fallbacks for annual fundamentals. Off by default. |
-| `WORKER_FUNDAMENTALS_PROVIDER_ORDER` | optional | `yfinance,sec,finnhub_reported,fmp` | Comma-separated provider priority for fundamentals. Only the first provider is used unless fallbacks are explicitly enabled. |
+| `WORKER_FUNDAMENTALS_PROVIDER_ORDER` | optional | `yfinance,sec,finnhub_reported,fmp` | Comma-separated provider priority for fundamentals. Providers are tried in order until required annual fields and ownership are complete or the list is exhausted. |
 | `WORKER_MARKET_MAIN_OPEN_HOUR` | optional | `9` | Main-session open hour in America/New_York. |
 | `WORKER_MARKET_MAIN_OPEN_MINUTE` | optional | `30` | Main-session open minute in America/New_York. |
 | `WORKER_MARKET_MAIN_CLOSE_HOUR` | optional | `16` | Main-session close hour in America/New_York. |
@@ -208,11 +206,11 @@ visible price:
 
 new ticker fundamentals:
     yfinance annual financials first
-    optional provider fallbacks only when WORKER_ENABLE_FUNDAMENTALS_FALLBACKS=1
     provider order controlled by WORKER_FUNDAMENTALS_PROVIDER_ORDER
+    partial provider payloads fall through to the next configured provider
 ```
 
-The SEC annual financials path remains in the codebase as a fallback/diagnostic provider, but it is not automatically chained unless fundamentals fallbacks are enabled. Visible ownership now comes from Yahoo major holders, not SEC 13F.
+The SEC annual financials path remains in the codebase as a fallback/diagnostic provider. Visible ownership currently comes from Yahoo major holders or other configured ownership-capable fundamentals providers, not SEC 13F.
 
 ### Debug Settings
 

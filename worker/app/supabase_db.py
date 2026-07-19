@@ -265,11 +265,7 @@ def history_complete(snapshot: dict[str, Any]) -> bool:
 
 
 def fundamentals_complete(snapshot: dict[str, Any]) -> bool:
-    if snapshot.get("fundamentals_status") == "complete":
-        return has_required_annual_fields(snapshot)
-    if snapshot.get("fundamentals_status") in {"missing", "error"}:
-        return False
-    return bool(snapshot.get("fundamentals_updated_at") and has_real_fundamentals(snapshot))
+    return snapshot.get("fundamentals_status") == "complete" and has_required_annual_fields(snapshot)
 
 
 def has_required_annual_fields(snapshot: dict[str, Any]) -> bool:

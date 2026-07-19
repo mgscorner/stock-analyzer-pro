@@ -141,7 +141,7 @@ class UseCaseTests(unittest.TestCase):
     @patch("app.use_cases.upsert_snapshot")
     @patch("app.use_cases.get_snapshot")
     @patch("app.use_cases.fetch_snapshot")
-    def test_visible_fundamentals_refresh_does_not_use_yfinance(self, fetch_snapshot, get_snapshot, upsert_snapshot) -> None:
+    def test_visible_fundamentals_refresh_allows_yfinance_fallback(self, fetch_snapshot, get_snapshot, upsert_snapshot) -> None:
         get_snapshot.return_value = full_snapshot()
         fetch_snapshot.return_value = {
             "symbol": "IONQ",
@@ -166,7 +166,7 @@ class UseCaseTests(unittest.TestCase):
             logger=None,
             limiter=None,
             force_fundamentals_fallbacks=True,
-            allow_yfinance_fundamentals=False,
+            allow_yfinance_fundamentals=True,
         )
         upsert_snapshot.assert_called_once()
 

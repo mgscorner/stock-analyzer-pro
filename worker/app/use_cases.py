@@ -153,7 +153,7 @@ def refresh_visible_fundamentals_use_case(client, settings: Settings, symbol: st
         logger=logger,
         limiter=limiter,
         force_fundamentals_fallbacks=True,
-        allow_yfinance_fundamentals=False,
+        allow_yfinance_fundamentals=True,
     )
     merged = {**existing, **fundamentals_snapshot}
     upsert_snapshot(client, merged)
@@ -167,7 +167,7 @@ def refresh_visible_missing_fundamentals_use_case(client, settings: Settings, sy
         logger=logger,
         limiter=limiter,
         force_fundamentals_fallbacks=True,
-        allow_yfinance_fundamentals=False,
+        allow_yfinance_fundamentals=True,
     )
     if fundamentals_snapshot.get("fundamentals_status") != "complete":
         raise ValueError("No complete annual fundamentals returned by configured providers")

@@ -56,7 +56,7 @@ class MarketDataTests(unittest.TestCase):
     @patch("app.market_data._fundamentals_cache", {})
     @patch("app.market_data.fundamentals_provider_order", return_value=["sec", "fmp", "yfinance"])
     @patch("app.market_data.fetch_fundamentals_provider")
-    def test_download_fundamentals_stops_before_yfinance_when_payload_complete(
+    def test_download_fundamentals_continues_until_payload_complete(
         self,
         fetch_provider,
         _provider_order,
@@ -81,7 +81,7 @@ class MarketDataTests(unittest.TestCase):
             "IONQ",
             logger=Mock(),
             limiter=limiter,
-            force_all_providers=True,
+            force_all_providers=False,
         )
 
         self.assertEqual(payload["inst_ownership"], 65.727)

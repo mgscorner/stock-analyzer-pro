@@ -27,7 +27,6 @@ def make_settings() -> Settings:
         debug_market_requests=False,
         enable_request_limiter=False,
         enable_quote_fast_lane=False,
-        enable_fundamentals_fallbacks=True,
         fundamentals_provider_order=["yfinance", "sec", "finnhub_reported", "fmp"],
         market_main_open_hour=9,
         market_main_open_minute=30,

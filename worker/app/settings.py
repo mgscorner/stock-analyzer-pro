@@ -20,7 +20,6 @@ class Settings:
     debug_market_requests: bool
     enable_request_limiter: bool
     enable_quote_fast_lane: bool
-    enable_fundamentals_fallbacks: bool
     fundamentals_provider_order: list[str]
     market_main_open_hour: int
     market_main_open_minute: int
@@ -59,8 +58,6 @@ def get_settings() -> Settings:
         debug_market_requests=os.getenv("WORKER_DEBUG_MARKET_REQUESTS", "0").strip() in {"1", "true", "True", "yes"},
         enable_request_limiter=os.getenv("WORKER_ENABLE_REQUEST_LIMITER", "1").strip() not in {"0", "false", "False", "no"},
         enable_quote_fast_lane=os.getenv("WORKER_ENABLE_QUOTE_FAST_LANE", "0").strip() in {"1", "true", "True", "yes"},
-        enable_fundamentals_fallbacks=os.getenv("WORKER_ENABLE_FUNDAMENTALS_FALLBACKS", "0").strip()
-        in {"1", "true", "True", "yes"},
         fundamentals_provider_order=parse_csv_list(
             os.getenv("WORKER_FUNDAMENTALS_PROVIDER_ORDER"),
             ["sec", "fmp", "finnhub_reported", "yfinance"],
