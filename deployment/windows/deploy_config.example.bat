@@ -1,6 +1,6 @@
 @echo off
-set PROJECT_ROOT=C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app
-set SSH_KEY=C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\deployment\ssh-key-2026-04-28.key
+set PROJECT_ROOT=PATH_TO_APP\production_app
+set SSH_KEY=PATH_TO_APP\production_app\deployment\KEYFILE.key
 set DEPLOY_USER=ubuntu
 set DEPLOY_HOST=129.80.99.95
 set PUBLIC_HOST=129.80.99.95
