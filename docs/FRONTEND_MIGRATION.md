@@ -48,7 +48,7 @@ The React app calls this function when a user adds a ticker that is missing from
 ## Run
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\frontend
+cd APP_DIR\\AnalyzerAppToCodex\frontend
 copy .env.example .env
 ```
 
