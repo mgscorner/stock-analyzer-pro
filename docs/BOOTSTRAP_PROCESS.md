@@ -132,7 +132,7 @@ manual admin CSV fallback
 Current admin script:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python create_index_lists.py --output-dir index_exports --diff-db
 python create_index_lists.py --output-dir index_exports --write-db
 ```
@@ -160,7 +160,7 @@ do not overwrite user/manual override data
 Current full-row bootstrap:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
 python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 python bootstrap_full_cache.py --universe sp500 nasdaq100 dow30 --missing-only --refetch-after-minutes 15 --limit 25
@@ -199,14 +199,14 @@ optional fallbacks stay disabled unless explicitly enabled in the worker config
 Current admin script:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python bootstrap_sec_fundamentals.py --symbols AAPL MSFT NVDA --dry-run --debug-logs
 ```
 
 Write results to Supabase:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python bootstrap_sec_fundamentals.py --symbols AAPL MSFT NVDA
 ```
 
@@ -259,7 +259,7 @@ calculate performance values when current price is available
 Current admin script:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python bootstrap_history.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run --debug-logs
 python bootstrap_history.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25
 ```
@@ -327,7 +327,7 @@ optionally keep SEC 13F data in the research path for comparison
 Current prototype:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python check_sec_13f_ownership.py AAPL
 python check_sec_13f_ownership.py MSFT
 ```
@@ -350,7 +350,7 @@ add TTL-based refresh for ownership if we want periodic revalidation
 Current cache bootstrap script:
 
 ```powershell
-cd C:\01_DATA\MyApps\AnalyzerAppToCodex\production_app\worker
+ROOTDIR\production_app\worker
 python bootstrap_ownership.py --symbols AAPL MSFT NVDA --dry-run
 python bootstrap_ownership.py --universe sp500 nasdaq100 dow30 --missing-only --limit 25 --dry-run
 ```
